@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PEPAR</title>
+{% include "base.css.html" %}
+<style>
+  form { display: grid; gap: 10px; }
+  .row { display: flex; gap: 8px; }
+  input, select { font: inherit; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  input { flex: 1; min-width: 0; padding: 12px 14px; }
+  select { padding: 10px 12px; }
+  label { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 14px; }
+  button { padding: 12px 18px; font: inherit; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+  h2 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 40px 0 10px; display: flex; gap: 8px; align-items: baseline; }
+  h2 .count { font-weight: 400; font-size: 13px; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  li > a { text-decoration: none; overflow-wrap: anywhere; }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 3px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+  .tag { padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; }
+  .warn, .err { color: var(--err); }
+  .hint { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+  .snippet { color: var(--muted); font-size: 13px; margin-top: 6px; line-height: 1.5; }
+  #docs li { display: flex; gap: 8px; align-items: flex-start; }
+  #docs li .body { flex: 1; min-width: 0; }
+  .more { flex: none; background: none; color: var(--muted); padding: 2px 8px; font-size: 18px; line-height: 1; border-radius: 6px; }
+  .more:hover, .more[aria-expanded="true"] { background: var(--line); color: var(--fg); }
+  .menu { position: absolute; z-index: 10; min-width: 190px; padding: 4px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; box-shadow: 0 8px 24px #0003; }
+  .menu button, .menu a { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px; font-size: 14px;
+    background: none; color: var(--fg); text-decoration: none; }
+  .menu button:hover, .menu a:hover { background: var(--line); }
+  .menu .danger { color: var(--err); }
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--fg); padding: 20px; max-width: min(420px, calc(100vw - 32px)); }
+  dialog::backdrop { background: #0006; }
+  dialog h3 { margin: 0 0 8px; font-size: 17px; }
+  dialog p { margin: 0 0 18px; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+  dialog .actions { display: flex; gap: 8px; justify-content: flex-end; }
+  dialog .cancel { background: var(--line); color: var(--fg); }
+  dialog .confirm { background: var(--err); }
+  mark { background: color-mix(in srgb, var(--accent) 25%, transparent); color: inherit; border-radius: 2px; }
+  #search { width: 100%; padding: 10px 12px; margin-bottom: 4px; }
+  .empty { color: var(--muted); font-size: 14px; padding: 12px 0; }
+
+  /* 번역 중 */
+  #jobs li { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; background: var(--card); }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 10px 0 6px; }
+  .bar > div { height: 100%; background: var(--accent); transition: width .5s; }
+  .bar.queued > div { background: var(--muted); }
+  .bar.indeterminate > div { width: 30% !important; animation: slide 1.2s ease-in-out infinite; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  .status { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  @media (max-width: 520px) { .row { flex-direction: column; } }
+  @media (prefers-reduced-motion: reduce) { .bar.indeterminate > div { animation: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>PEPAR</h1>
+  <p class="sub">paper translator — 논문과 웹페이지를 한국어로</p>
+  <div class="card">
+    <form action="/open" method="get" target="_blank">
+      <div class="row">
+        <input name="url" required autofocus placeholder="arXiv 링크·ID 또는 웹페이지 URL">
+        <button type="submit">번역</button>
+      </div>
+      <label>모델
+        <select name="model" id="model">
+          {% for m in models %}
+          <option value="{{ m.id }}" {% if m.id == default_model %}selected{% endif %}>{{ m.id }}{% if m.loaded %} · 로드됨{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </form>
+    {% if models_error %}<p class="hint warn">{{ models_error }}</p>{% endif %}
+    <p class="hint">결과는 새 탭에서 열립니다. GPU에는 모델이 하나만 올라가므로, 로드되지 않은 모델을 고르면 불러오는 데 1분 정도 더 걸립니다.</p>
+  </div>
+
+  <section id="jobs-section" hidden>
+    <h2>번역 중 <span class="count" id="jobs-count"></span></h2>
+    <ul id="jobs"></ul>
+  </section>
+
+  <section>
+    <h2>번역한 문서 <span class="count" id="docs-count"></span></h2>
+    <input id="search" type="search" placeholder="제목, 사이트, 모델, 번역된 본문 검색">
+    <ul id="docs"></ul>
+  </section>
+</main>
+<dialog id="confirm-delete">
+  <form method="dialog">
+    <h3>번역한 문서 삭제</h3>
+    <p id="confirm-text"></p>
+    <div class="actions">
+      <button class="cancel" value="cancel">취소</button>
+      <button class="confirm" value="ok">삭제</button>
+    </div>
+  </form>
+</dialog>
+<script>
+(() => {
+  // 마지막으로 고른 모델 기억 (브라우저별)
+  const sel = document.getElementById('model');
+  try {
+    const last = localStorage.getItem('pepar-model');
+    if (last && [...sel.options].some(o => o.value === last)) sel.value = last;
+  } catch {}
+  sel.addEventListener('change', () => { try { localStorage.setItem('pepar-model', sel.value); } catch {} });
+
+  const $ = id => document.getElementById(id);
+  const el = (tag, props = {}, ...kids) => {
+    const e = document.createElement(tag);
+    Object.assign(e, props);
+    for (const k of kids) if (k != null) e.append(k);
+    return e;
+  };
+  const dur = s => s >= 3600 ? `${Math.floor(s / 3600)}시간 ${Math.round(s % 3600 / 60)}분`
+                 : s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
+  const host = u => { try { return new URL(u).hostname; } catch { return u || ''; } };
+
+  function when(iso) {
+    const d = new Date(iso), s = (Date.now() - d) / 1000;
+    const rel = s < 60 ? '방금' : s < 3600 ? `${Math.floor(s / 60)}분 전` : s < 86400 ? `${Math.floor(s / 3600)}시간 전`
+              : s < 86400 * 30 ? `${Math.floor(s / 86400)}일 전` : null;
+    const abs = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} `
+              + `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return rel ? `${rel} (${abs})` : abs;
+  }
+
+  // text 안의 terms를 <mark>로 감싼 노드 조각
+  function highlight(text, terms) {
+    const frag = document.createDocumentFragment();
+    const ts = terms.filter(Boolean).map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    if (!ts.length) { frag.append(text); return frag; }
+    const re = new RegExp(`(${ts.join('|')})`, 'gi');
+    text.split(re).forEach((part, i) => frag.append(i % 2 ? el('mark', { textContent: part }) : part));
+    return frag;
+  }
+
+  // ---------------------------------------------------------- 번역 중
+  let jobKeys = new Set();
+
+  function renderJobs(jobs) {
+    $('jobs-section').hidden = !jobs.length;
+    $('jobs-count').textContent = jobs.length ? `${jobs.length}개` : '';
+    $('jobs').replaceChildren(...jobs.map(j => {
+      const href = `/view/${encodeURIComponent(j.model)}/${encodeURIComponent(j.key)}`;
+      const bar = el('div', { className: 'bar' }, el('div'));
+      let status;
+      if (j.stage === 'error') {
+        bar.hidden = true;
+        const dismiss = el('button', { type: 'button', className: 'more', textContent: '×', title: '닫기' });
+        dismiss.addEventListener('click', async () => {
+          await fetch(`/api/jobs/${encodeURIComponent(j.model)}/${encodeURIComponent(j.key)}`, { method: 'DELETE' }).catch(() => {});
+          pollNow();
+        });
+        status = el('span', { className: 'err' }, `실패: ${j.message} · `, el('a', { href, target: '_blank', textContent: '다시 시도' }), ' ', dismiss);
+      } else if (j.stage === 'queued') {
+        bar.classList.add('queued');
+        bar.firstChild.style.width = '0%';
+        const w = j.wait ? ` · 약 ${dur(j.wait)}${j.wait_partial ? ' 이상' : ''} 뒤 시작` : '';
+        status = `대기 중 · 앞선 작업 ${j.ahead}개${w}`;
+      } else if (j.stage === 'fetching' || (j.stage === 'translating' && !j.total)) {
+        bar.classList.add('indeterminate');
+        status = '원문을 가져오는 중…';
+      } else {
+        const pct = j.total ? j.done / j.total * 100 : 0;
+        if (j.done === 0) bar.classList.add('indeterminate'); else bar.firstChild.style.width = pct + '%';
+        status = j.done === 0 ? `0 / ${j.total} 블록 · 모델을 불러오는 중일 수 있음`
+               : `${j.done} / ${j.total} 블록 (${Math.round(pct)}%)` + (j.eta != null ? ` · 남은 시간 약 ${dur(j.eta)}` : '');
+      }
+      return el('li', {},
+        el('a', { href, target: '_blank', textContent: j.title || j.url || j.key }),
+        el('div', { className: 'meta' },
+          el('span', { textContent: j.key.startsWith('w-') ? host(j.url) : 'arXiv' }),
+          el('span', { className: 'tag', textContent: j.model })),
+        bar,
+        el('div', { className: 'status' }, status));
+    }));
+  }
+
+  async function pollJobs() {
+    let jobs = [];
+    try { jobs = await (await fetch('/api/jobs')).json(); } catch {}
+    const active = jobs.filter(j => j.stage !== 'error');
+    const now = new Set(active.map(j => `${j.model}/${j.key}`));
+    // 진행 중이던 작업이 목록에서 빠졌다 = 끝났다 → 문서 목록 새로고침
+    if ([...jobKeys].some(k => !now.has(k))) loadDocs();
+    jobKeys = now;
+    renderJobs(jobs);
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(pollJobs, active.length ? 2000 : 5000);
+  }
+  let pollTimer;
+  const pollNow = () => { clearTimeout(pollTimer); pollJobs(); };
+
+  // ---------------------------------------------------------- 번역한 문서
+  let docs = [];
+  let contentHits = new Map();  // "model/key" → {snippet, count}
+  let searchSeq = 0;
+
+  async function loadDocs() {
+    try { docs = await (await fetch('/api/docs')).json(); } catch { docs = []; }
+    renderDocs();
+  }
+
+  function renderDocs() {
+    const q = $('search').value.trim().toLowerCase();
+    const terms = q.split(/\s+/).filter(Boolean);
+    const shown = docs.filter(d => {
+      if (!terms.length) return true;
+      const hay = `${d.title} ${d.where} ${d.model} ${d.url} ${d.key}`.toLowerCase();
+      return terms.every(t => hay.includes(t)) || contentHits.has(`${d.model}/${d.key}`);
+    });
+    $('docs-count').textContent = terms.length ? `${shown.length} / ${docs.length}개` : `${docs.length}개`;
+    if (!shown.length) {
+      $('docs').replaceChildren(el('li', { className: 'empty', textContent: docs.length ? '검색 결과가 없습니다.' : '아직 번역한 문서가 없습니다.' }));
+      return;
+    }
+    $('docs').replaceChildren(...shown.map(d => {
+      const hit = contentHits.get(`${d.model}/${d.key}`);
+      const meta = el('div', { className: 'meta' },
+        el('span', { textContent: d.where }),
+        el('span', { className: 'tag', textContent: d.model }),
+        el('span', { textContent: when(d.translated_at), title: '번역한 시각' }));
+      if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}블록` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
+      if (d.failed) meta.append(el('span', { className: 'warn' }, `실패 ${d.failed}블록 · `,
+        el('a', { href: `/view/${encodeURIComponent(d.model)}/${encodeURIComponent(d.key)}?retry_failed=1`, target: '_blank',
+                  textContent: '재번역', title: '실패한 블록만 다시 번역' })));
+      const more = el('button', { className: 'more', type: 'button', textContent: '⋯', title: '더 보기' });
+      more.setAttribute('aria-haspopup', 'menu');
+      more.setAttribute('aria-expanded', 'false');
+      more.addEventListener('click', e => { e.stopPropagation(); openMenu(more, d); });
+      return el('li', {},
+        el('div', { className: 'body' },
+          el('a', { href: docHref(d), target: '_blank' }, highlight(d.title, terms)),
+          meta,
+          hit ? el('div', { className: 'snippet' }, highlight(hit.snippet, [q]), hit.count > 1 ? ` (${hit.count}곳)` : '') : null),
+        more);
+    }));
+  }
+
+  const docHref = (d, q = '') => `/view/${encodeURIComponent(d.model)}/${encodeURIComponent(d.key)}${q}`;
+
+  // ---------------------------------------------------------- ⋯ 메뉴
+  let menu = null;
+  function closeMenu() {
+    if (!menu) return;
+    menu.anchor.setAttribute('aria-expanded', 'false');
+    menu.remove();
+    menu = null;
+  }
+  function openMenu(anchor, d) {
+    const same = menu && menu.anchor === anchor;
+    closeMenu();
+    if (same) return;
+    menu = el('div', { className: 'menu', role: 'menu' },
+      el('a', { href: docHref(d), target: '_blank', textContent: '열기' }),
+      d.failed ? el('a', { href: docHref(d, '?retry_failed=1'), target: '_blank', textContent: `실패 ${d.failed}블록만 재번역` }) : null,
+      el('a', { href: docHref(d, '?retranslate=1'), target: '_blank', textContent: '처음부터 다시 번역' }),
+      el('button', { type: 'button', className: 'danger', textContent: '삭제…', onclick: () => { closeMenu(); confirmDelete(d); } }));
+    menu.anchor = anchor;
+    anchor.setAttribute('aria-expanded', 'true');
+    document.body.append(menu);
+    const r = anchor.getBoundingClientRect();
+    const left = Math.max(8, Math.min(r.right - menu.offsetWidth, innerWidth - menu.offsetWidth - 8));
+    menu.style.left = left + scrollX + 'px';
+    menu.style.top = r.bottom + scrollY + 4 + 'px';
+    menu.querySelector('a, button').focus();
+  }
+  document.addEventListener('click', e => { if (menu && !menu.contains(e.target)) closeMenu(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
+  addEventListener('resize', closeMenu);
+
+  // ---------------------------------------------------------- 삭제
+  function confirmDelete(d) {
+    const dlg = $('confirm-delete');
+    $('confirm-text').textContent = `“${d.title}” (${d.model}) 번역을 삭제합니다. 되돌릴 수 없습니다.`;
+    dlg.returnValue = '';
+    dlg.onclose = async () => {
+      if (dlg.returnValue !== 'ok') return;
+      try {
+        const r = await fetch(`/api/docs/${encodeURIComponent(d.model)}/${encodeURIComponent(d.key)}`, { method: 'DELETE' });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      } catch (err) {
+        alert('삭제하지 못했습니다: ' + err.message);
+      }
+      contentHits.delete(`${d.model}/${d.key}`);
+      loadDocs();
+    };
+    dlg.showModal();
+  }
+
+  let timer;
+  $('search').addEventListener('input', () => {
+    renderDocs();  // 제목·사이트·모델은 바로 거른다
+    clearTimeout(timer);
+    timer = setTimeout(async () => {  // 본문 검색은 입력이 멈추면 서버에
+      const q = $('search').value.trim();
+      const seq = ++searchSeq;
+      let hits = [];
+      if (q.length >= 2) { try { hits = await (await fetch('/api/search?q=' + encodeURIComponent(q))).json(); } catch {} }
+      if (seq !== searchSeq) return;  // 더 최근 입력이 있으면 버림
+      contentHits = new Map(hits.map(h => [`${h.model}/${h.key}`, h]));
+      renderDocs();
+    }, 300);
+  });
+
+  loadDocs();
+  pollJobs();
+  setInterval(renderDocs, 60000);  // "n분 전" 갱신
+})();
+</script>
+</body>
+</html>

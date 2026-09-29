@@ -1,0 +1,13 @@
+<style>
+  :root { --bg: #fafaf9; --fg: #1c1a17; --muted: #6b6760; --line: #e4e2dd; --card: #fff; --accent: #1f6feb; --err: #c0392b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --fg: #ecebe8; --muted: #9c9890; --line: #2e2d2a; --card: #1f1e1c; --accent: #4c8dff; --err: #ff6b5b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, "Pretendard", "Noto Sans KR", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 56px 16px; }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); margin: 0 0 32px; }
+  a { color: var(--accent); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+</style>
