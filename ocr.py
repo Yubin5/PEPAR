@@ -98,7 +98,9 @@ def extract(model: str, img: Image.Image) -> list[dict]:
     body = {
         "model": model,
         "temperature": 0,
-        "max_tokens": 8192,
+        # 정상 조각은 800토큰 안쪽이다. 게임 화면처럼 반복에 빠지면 8192까지 8분을 쓰므로 일찍 끊는다
+        # (잘려도 완성된 라벨까지는 아래에서 살린다)
+        "max_tokens": 2048,
         "chat_template_kwargs": {"enable_thinking": False},
         "response_format": {"type": "json_schema", "json_schema": {"name": "labels", "schema": OCR_SCHEMA}},
         "messages": [
@@ -120,7 +122,7 @@ def extract(model: str, img: Image.Image) -> list[dict]:
         raw = [json.loads(m) for m in re.findall(r'\{[^{}]*"box_2d"[^{}]*\}', content)]
     labels = []
     for o in raw:
-        text = " ".join(str(o.get("text", "")).split())
+        text = " ".join(clean(str(o.get("text", ""))).split())
         box = o.get("box_2d")
         if not text or not isinstance(box, list) or len(box) != 4:
             continue
@@ -270,6 +272,14 @@ def _drop_repeats(labels: list[dict]) -> list[dict]:
     return [lb for lb in labels if count[(lb.get("tile", 0), lb["text"])] < REPEAT]
 
 
+SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
+def clean(s: str) -> str:
+    """모델이 이모지를 반쪽만(짝 없는 서로게이트) 내놓기도 한다. 그대로 두면 UTF-8로 저장할 때 터진다."""
+    return SURROGATE.sub("", s)
+
+
 CJK = re.compile(r"[぀-ヿ㐀-鿿가-힣]")
 
 
@@ -374,7 +384,7 @@ def run(model: str, data: bytes, on_progress, checkpoint=None) -> tuple[list[dic
     for idxs in translator.batches([items[i] for i in todo]):
         real = [todo[k] for k in idxs]
         for i, t in translator.translate_batch(model, system, items, real).items():
-            labels[i]["ko"] = t
+            labels[i]["ko"] = clean(t)
         if checkpoint:
             checkpoint.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
         done += len(real)
