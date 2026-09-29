@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[번역] {{ title }}</title>
+{% include "base.css.html" %}
+<style>
+  main { max-width: 1200px; padding-top: 24px; }
+  .top { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 16px; }
+  .top h1 { font-size: 18px; margin: 0; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .tag { padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; color: var(--muted); }
+  .top a, .top button { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card);
+    color: var(--fg); font: inherit; font-size: 14px; text-decoration: none; cursor: pointer; }
+  .top button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .top a.retry { background: #d29922; border-color: #d29922; color: #fff; }
+
+  /* 원본 이미지 + 번역 라벨 */
+  .stage { position: relative; width: 100%; max-width: {{ width }}px; margin: 0 auto; line-height: 0; }
+  .stage img { width: 100%; height: auto; display: block; border-radius: 4px; }
+  .lb { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center;
+    overflow: hidden; line-height: 1.15; white-space: nowrap; overflow-wrap: anywhere; font-weight: 500;
+    font-family: system-ui, "Pretendard", "Noto Sans KR", sans-serif; background: #fffe; color: #111;
+    border-radius: 2px; transition: opacity .12s; cursor: default; }
+  .lb.wrap { white-space: normal; }
+  .lb:hover { opacity: 0; }  /* 마우스를 올리면 그 자리의 원문이 보인다 */
+  .lb.hl { outline: 2px solid var(--accent); outline-offset: 1px; opacity: 1; }
+  .fail { position: absolute; outline: 2px dotted #d29922; outline-offset: 1px; pointer-events: none; }
+  .stage.orig .lb, .stage.orig .fail { display: none; }
+  .hint { color: var(--muted); font-size: 13px; margin: 10px 0 0; text-align: center; }
+
+  /* 라벨 목록 */
+  h2 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 32px 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+  td:first-child { color: var(--muted); width: 45%; }
+  tr:hover td { background: var(--card); }
+  td.none { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <h1>{{ title }}</h1>
+    <span class="tag">{{ model }}</span>
+    {% if failed %}<a class="retry" href="{{ retry_url }}" title="번역에 실패한 라벨만 다시 번역">실패 {{ failed }}개 재번역</a>{% endif %}
+    <a href="/">PEPAR</a>
+    <a href="/image/{{ key }}" target="_blank" rel="noopener">원본 이미지</a>
+    <button id="toggle" class="primary" type="button">원문 보기</button>
+  </div>
+
+  <div class="stage" id="stage">
+    <img id="img" src="/image/{{ key }}" width="{{ width }}" height="{{ height }}" alt="{{ title }}">
+  </div>
+  <p class="hint">라벨에 마우스를 올리면 그 자리의 원문이 보입니다.</p>
+
+  <h2>읽은 글자 {{ labels|length }}개</h2>
+  <table>
+    {% for lb in labels %}
+    <tr data-i="{{ loop.index0 }}"><td>{{ lb.text }}</td>{% if lb.ko %}<td>{{ lb.ko }}</td>{% else %}<td class="none">원문 유지</td>{% endif %}</tr>
+    {% endfor %}
+  </table>
+</main>
+<script id="labels" type="application/json">{{ labels|tojson }}</script>
+<script>
+(() => {
+  const labels = JSON.parse(document.getElementById('labels').textContent);
+  const stage = document.getElementById('stage');
+  const img = document.getElementById('img');
+  const toggle = document.getElementById('toggle');
+  const nodes = [];  // 라벨 순서대로 덮개 요소 (번역이 없으면 실패 표시 또는 null)
+
+  toggle.addEventListener('click', () => {
+    const orig = stage.classList.toggle('orig');
+    toggle.textContent = orig ? '번역 보기' : '원문 보기';
+  });
+
+  // 라벨마다 덮개 위치(원본 이미지 픽셀 기준 [x1, y1, x2, y2])와 색. 모델 박스는 대문자 윗선~기준선 정도라
+  // p·y의 아랫부분이 빠지고, 위치도 몇 px(긴 라벨은 십여 px)씩 어긋난다. 캔버스를 못 쓰면 고정 여유만 둔다
+  function fallback() {
+    const W = img.naturalWidth, H = img.naturalHeight;
+    return labels.map(({ box }) => {
+      const h = (box[3] - box[1]) * H;
+      return { rect: [box[0] * W - h * 0.2, box[1] * H - h * 0.25, box[2] * W + h * 0.2, box[3] * H + h * 0.55], h };
+    });
+  }
+
+  // 원본 픽셀을 보고, 박스 가장자리에서 글자 획이 이어지는 만큼 박스를 넓힌다. 색도 여기서 뽑는다
+  function analyze() {
+    const W = img.naturalWidth, H = img.naturalHeight;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+    const px = ctx.getImageData(0, 0, W, H).data;
+    const at = (x, y) => { const k = (Math.min(H - 1, Math.max(0, y | 0)) * W + Math.min(W - 1, Math.max(0, x | 0))) * 4; return [px[k], px[k + 1], px[k + 2]]; };
+    const median = arr => [0, 1, 2].map(c => arr.map(p => p[c]).sort((a, b) => a - b)[arr.length >> 1]);
+    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const ringBg = (x1, y1, x2, y2, m) => {
+      const ring = [];
+      for (let t = 0; t <= 1; t += 0.05) {
+        const x = x1 + (x2 - x1) * t, y = y1 + (y2 - y1) * t;
+        ring.push(at(x, y1 - m), at(x, y2 + m), at(x1 - m, y), at(x2 + m, y));
+      }
+      return median(ring);
+    };
+    // from에서 step 방향으로 test가 참인 줄이 이어지는 끝. gap보다 긴 공백이 나오거나 limit만큼 가면 멈춘다
+    const grow = (from, step, limit, gap, test) => {
+      let last = from;
+      for (let v = from + step; Math.abs(v - from) <= limit && Math.abs(v - last) <= gap; v += step) if (test(v)) last = v;
+      return last;
+    };
+    return labels.map(({ box }) => {
+      let [x1, y1, x2, y2] = [box[0] * W, box[1] * H, box[2] * W, box[3] * H].map(Math.round);
+      const h = Math.max(4, y2 - y1);
+      const bg0 = ringBg(x1, y1, x2, y2, h * 0.7);
+      const ink = (x, y) => dist(at(x, y), bg0) > 60;
+      const col = (a, b) => x => { for (let y = a; y <= b; y++) if (ink(x, y)) return true; return false; };
+      const row = (a, b) => y => { for (let x = a; x <= b; x++) if (ink(x, y)) return true; return false; };
+      // 위아래 먼저 (아랫부분 획), 그다음 좌우 (낱말 사이 빈칸은 건너뛴다)
+      y2 = grow(y2, 1, h * 0.7, Math.max(1, h * 0.08), row(x1, x2));
+      y1 = grow(y1, -1, h * 0.5, Math.max(1, h * 0.08), row(x1, x2));
+      x2 = grow(x2, 1, h * 2, h * 0.5, col(y1, y2));
+      x1 = grow(x1, -1, h * 2, h * 0.5, col(y1, y2));
+      const m = Math.max(1, h * 0.12);
+      const bg = ringBg(x1, y1, x2, y2, m + 2);
+      const inside = [];
+      for (let y = y1; y < y2; y += Math.max(1, (y2 - y1) / 12))
+        for (let x = x1; x < x2; x += Math.max(1, (x2 - x1) / 40)) inside.push(at(x, y));
+      inside.sort((a, b) => dist(b, bg) - dist(a, bg));
+      const inkColor = inside.length ? median(inside.slice(0, Math.max(1, inside.length / 10 | 0))) : [0, 0, 0];
+      const fg = dist(inkColor, bg) > 90 ? inkColor : (lum(bg) > 128 ? [17, 17, 17] : [245, 245, 245]);
+      return { rect: [x1 - m, y1 - m, x2 + m, y2 + m], h, bg: `rgb(${bg})`, fg: `rgb(${fg})` };
+    });
+  }
+
+  let covers;
+  function build() {
+    try { covers = analyze(); } catch { covers = fallback(); }  // 캔버스를 못 쓰면 기본 흰 바탕
+    labels.forEach((lb, i) => {
+      let n = null;
+      if (lb.ko) {
+        n = document.createElement('div');
+        n.className = 'lb';
+        n.textContent = lb.ko;
+        n.title = '원문: ' + lb.text;
+        if (covers[i].bg) { n.style.background = covers[i].bg; n.style.color = covers[i].fg; }
+      } else if (/[^\W\d_]{2}/u.test(lb.text) && {{ failed|tojson }}) {
+        n = document.createElement('div');
+        n.className = 'fail';
+        n.title = '번역 실패: ' + lb.text;
+      }
+      if (n) stage.append(n);
+      nodes.push(n);
+    });
+    layout();
+    new ResizeObserver(layout).observe(stage);
+  }
+
+  // 덮개 위치를 화면 크기에 맞추고, 번역문이 들어가도록 글자 크기를 줄인다
+  function layout() {
+    const s = stage.clientWidth / img.naturalWidth;
+    labels.forEach((_, i) => {
+      const n = nodes[i];
+      if (!n) return;
+      const [x1, y1, x2, y2] = covers[i].rect.map(v => v * s);
+      const h = covers[i].h * s;
+      Object.assign(n.style, { left: x1 + 'px', top: y1 + 'px', width: x2 - x1 + 'px', height: y2 - y1 + 'px' });
+      if (n.className === 'fail') return;
+      n.classList.remove('wrap');
+      let size = h * 0.9;
+      const fits = () => n.scrollWidth <= n.clientWidth + 1 && n.scrollHeight <= n.clientHeight + 1;
+      n.style.fontSize = size + 'px';
+      while (!fits() && size > h * 0.6) n.style.fontSize = (size *= 0.92) + 'px';
+      if (!fits()) {  // 한 줄로는 너무 작아지면 줄을 바꿔서 다시 맞춘다
+        n.classList.add('wrap');
+        while (!fits() && size > 7) n.style.fontSize = (size *= 0.92) + 'px';
+      }
+    });
+  }
+
+  // 목록에서 줄에 마우스를 올리면 이미지의 해당 라벨을 표시한다
+  document.querySelectorAll('tr[data-i]').forEach(tr => {
+    const n = () => nodes[+tr.dataset.i];
+    tr.addEventListener('mouseenter', () => n()?.classList.add('hl'));
+    tr.addEventListener('mouseleave', () => n()?.classList.remove('hl'));
+  });
+
+  if (img.complete && img.naturalWidth) build(); else img.addEventListener('load', build);
+})();
+</script>
+</body>
+</html>

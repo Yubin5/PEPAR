@@ -52,6 +52,12 @@
   .bar.indeterminate > div { width: 30% !important; animation: slide 1.2s ease-in-out infinite; }
   @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
   .status { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .file { flex: 1; min-width: 0; display: flex; align-items: center; padding: 8px 10px; border: 1px dashed var(--line);
+    border-radius: 8px; color: var(--muted); font-size: 14px; cursor: pointer; }
+  .file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .file.drag { border-color: var(--accent); color: var(--fg); }
+  .file:focus-within { outline: 2px solid var(--accent); }
+  button.secondary { background: var(--line); color: var(--fg); }
   @media (max-width: 520px) { .row { flex-direction: column; } }
   @media (prefers-reduced-motion: reduce) { .bar.indeterminate > div { animation: none; } }
 </style>
@@ -59,23 +65,29 @@
 <body>
 <main>
   <h1>PEPAR</h1>
-  <p class="sub">paper translator — 논문과 웹페이지를 한국어로</p>
+  <p class="sub">paper translator — 논문, 웹페이지, 이미지를 한국어로</p>
   <div class="card">
-    <form action="/open" method="get" target="_blank">
+    <form action="/open" method="get" target="_blank" id="form">
       <div class="row">
         <input name="url" required autofocus placeholder="arXiv 링크·ID 또는 웹페이지 URL">
         <button type="submit">번역</button>
       </div>
+      <div class="row">
+        <label class="file" id="drop"><input type="file" name="image" id="image" accept="image/*">
+          <span id="file-label">이미지 파일 선택 · 끌어다 놓기 · 붙여넣기(Ctrl+V)</span></label>
+        <button type="submit" class="secondary" id="image-submit" formaction="/upload" formmethod="post"
+          formenctype="multipart/form-data" formnovalidate>이미지 번역</button>
+      </div>
       <label>모델
         <select name="model" id="model">
           {% for m in models %}
-          <option value="{{ m.id }}" {% if m.id == default_model %}selected{% endif %}>{{ m.id }}{% if m.loaded %} · 로드됨{% endif %}</option>
+          <option value="{{ m.id }}" data-vision="{{ 1 if m.vision else '' }}" {% if m.id == default_model %}selected{% endif %}>{{ m.id }}{% if m.loaded %} · 로드됨{% endif %}{% if m.vision %} · 이미지{% endif %}</option>
           {% endfor %}
         </select>
       </label>
     </form>
     {% if models_error %}<p class="hint warn">{{ models_error }}</p>{% endif %}
-    <p class="hint">결과는 새 탭에서 열립니다. GPU에는 모델이 하나만 올라가므로, 로드되지 않은 모델을 고르면 불러오는 데 1분 정도 더 걸립니다.</p>
+    <p class="hint">이미지는 글자를 읽어 원래 자리에 번역문을 덮어 보여줍니다. 「· 이미지」가 붙은 모델만 쓸 수 있습니다.<br>결과는 새 탭에서 열립니다. GPU에는 모델이 하나만 올라가므로, 로드되지 않은 모델을 고르면 불러오는 데 1분 정도 더 걸립니다.</p>
   </div>
 
   <section id="jobs-section" hidden>
@@ -110,6 +122,36 @@
   sel.addEventListener('change', () => { try { localStorage.setItem('pepar-model', sel.value); } catch {} });
 
   const $ = id => document.getElementById(id);
+
+  // ---------------------------------------------------------- 이미지 업로드
+  const fileInput = $('image');
+  const showFile = () => {
+    const f = fileInput.files[0];
+    $('file-label').textContent = f ? f.name : '이미지 파일 선택 · 끌어다 놓기 · 붙여넣기(Ctrl+V)';
+  };
+  const setFile = f => {
+    if (!f || !f.type.startsWith('image/')) return false;
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    fileInput.files = dt.files;
+    showFile();
+    return true;
+  };
+  fileInput.addEventListener('change', showFile);
+  const drop = $('drop');
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); setFile(e.dataTransfer.files[0]); });
+  document.addEventListener('paste', e => {
+    const f = [...(e.clipboardData?.files || [])].find(f => f.type.startsWith('image/'));
+    if (f && setFile(new File([f], f.name && f.name !== 'image.png' ? f.name : `붙여넣은 이미지 ${new Date().toLocaleString()}.png`, { type: f.type }))) e.preventDefault();
+  });
+  $('image-submit').addEventListener('click', e => {
+    if (!fileInput.files.length) { e.preventDefault(); fileInput.click(); return; }
+    if (!sel.selectedOptions[0]?.dataset.vision && !confirm(`${sel.value}은(는) 이미지를 읽지 못하는 모델로 보입니다. 그래도 보낼까요?`)) e.preventDefault();
+  });
+  // 주소로 번역할 때는 파일을 같이 보내지 않는다
+  $('form').addEventListener('submit', e => { if (e.submitter?.id !== 'image-submit') fileInput.disabled = true; setTimeout(() => { fileInput.disabled = false; }); });
   const el = (tag, props = {}, ...kids) => {
     const e = document.createElement(tag);
     Object.assign(e, props);
@@ -162,6 +204,9 @@
         bar.firstChild.style.width = '0%';
         const w = j.wait ? ` · 약 ${dur(j.wait)}${j.wait_partial ? ' 이상' : ''} 뒤 시작` : '';
         status = `대기 중 · 앞선 작업 ${j.ahead}개${w}`;
+      } else if (j.stage === 'reading') {
+        bar.classList.add('indeterminate');
+        status = '이미지에서 글자를 읽는 중… (모델을 불러오는 중일 수 있음)';
       } else if (j.stage === 'fetching' || (j.stage === 'translating' && !j.total)) {
         bar.classList.add('indeterminate');
         status = '원문을 가져오는 중…';
@@ -174,7 +219,7 @@
       return el('li', {},
         el('a', { href, target: '_blank', textContent: j.title || j.url || j.key }),
         el('div', { className: 'meta' },
-          el('span', { textContent: j.key.startsWith('w-') ? host(j.url) : 'arXiv' }),
+          el('span', { textContent: j.key.startsWith('w-') ? host(j.url) : j.key.startsWith('i-') ? '이미지' : 'arXiv' }),
           el('span', { className: 'tag', textContent: j.model })),
         bar,
         el('div', { className: 'status' }, status));
@@ -225,7 +270,7 @@
         el('span', { textContent: d.where }),
         el('span', { className: 'tag', textContent: d.model }),
         el('span', { textContent: when(d.translated_at), title: '번역한 시각' }));
-      if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}블록` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
+      if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}${d.key.startsWith('i-') ? '개 라벨' : '블록'}` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
       if (d.failed) meta.append(el('span', { className: 'warn' }, `실패 ${d.failed}블록 · `,
         el('a', { href: `/view/${encodeURIComponent(d.model)}/${encodeURIComponent(d.key)}?retry_failed=1`, target: '_blank',
                   textContent: '재번역', title: '실패한 블록만 다시 번역' })));
