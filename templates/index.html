@@ -149,6 +149,8 @@
   $('image-submit').addEventListener('click', e => {
     if (!fileInput.files.length) { e.preventDefault(); fileInput.click(); return; }
     if (!sel.selectedOptions[0]?.dataset.vision && !confirm(`${sel.value}은(는) 이미지를 읽지 못하는 모델로 보입니다. 그래도 보낼까요?`)) e.preventDefault();
+    // e2b·e4b는 작아서 글자를 지어내거나 위치를 크게 틀린다 (2026-09-29 캡처 테스트)
+    else if (/-e[24]b$/.test(sel.value) && !confirm(`${sel.value}은(는) 작은 모델이라 글자 위치와 내용이 부정확합니다. gemma4-12b를 권장합니다.\n그래도 ${sel.value}로 번역할까요?`)) e.preventDefault();
   });
   // 주소로 번역할 때는 파일을 같이 보내지 않는다
   $('form').addEventListener('submit', e => { if (e.submitter?.id !== 'image-submit') fileInput.disabled = true; setTimeout(() => { fileInput.disabled = false; }); });
@@ -205,8 +207,9 @@
         const w = j.wait ? ` · 약 ${dur(j.wait)}${j.wait_partial ? ' 이상' : ''} 뒤 시작` : '';
         status = `대기 중 · 앞선 작업 ${j.ahead}개${w}`;
       } else if (j.stage === 'reading') {
-        bar.classList.add('indeterminate');
-        status = '이미지에서 글자를 읽는 중… (모델을 불러오는 중일 수 있음)';
+        if (j.total > 1 && j.done) bar.firstChild.style.width = j.done / j.total * 100 + '%'; else bar.classList.add('indeterminate');
+        status = '이미지에서 글자를 읽는 중…' + (j.total > 1 ? ` ${j.done} / ${j.total} 조각` : '')
+               + (j.done === 0 ? ' (모델을 불러오는 중일 수 있음)' : '');
       } else if (j.stage === 'fetching' || (j.stage === 'translating' && !j.total)) {
         bar.classList.add('indeterminate');
         status = '원문을 가져오는 중…';

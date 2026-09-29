@@ -23,6 +23,7 @@
     font-family: system-ui, "Pretendard", "Noto Sans KR", sans-serif; background: #fffe; color: #111;
     border-radius: 2px; transition: opacity .12s; cursor: default; }
   .lb.wrap { white-space: normal; }
+  .lb.block { justify-content: flex-start; align-items: flex-start; text-align: left; }  /* 여러 줄 문단 */
   .lb:hover { opacity: 0; }  /* 마우스를 올리면 그 자리의 원문이 보인다 */
   .lb.hl { outline: 2px solid var(--accent); outline-offset: 1px; opacity: 1; }
   .fail { position: absolute; outline: 2px dotted #d29922; outline-offset: 1px; pointer-events: none; }
@@ -79,8 +80,8 @@
   // p·y의 아랫부분이 빠지고, 위치도 몇 px(긴 라벨은 십여 px)씩 어긋난다. 캔버스를 못 쓰면 고정 여유만 둔다
   function fallback() {
     const W = img.naturalWidth, H = img.naturalHeight;
-    return labels.map(({ box }) => {
-      const h = (box[3] - box[1]) * H;
+    return labels.map(({ box, lines = 1 }) => {
+      const h = (box[3] - box[1]) * H / lines;
       return { rect: [box[0] * W - h * 0.2, box[1] * H - h * 0.25, box[2] * W + h * 0.2, box[3] * H + h * 0.55], h };
     });
   }
@@ -105,24 +106,41 @@
       }
       return median(ring);
     };
-    // from에서 step 방향으로 test가 참인 줄이 이어지는 끝. gap보다 긴 공백이 나오거나 limit만큼 가면 멈춘다
-    const grow = (from, step, limit, gap, test) => {
+    // from에서 step 방향으로 test가 참인 줄이 이어지는 끝. gap보다 긴 공백이 나오거나, limit만큼 가거나,
+    // stop이 참인 줄(다른 라벨 자리)에 닿으면 멈춘다
+    const grow = (from, step, limit, gap, test, stop) => {
       let last = from;
-      for (let v = from + step; Math.abs(v - from) <= limit && Math.abs(v - last) <= gap; v += step) if (test(v)) last = v;
+      for (let v = from + step; Math.abs(v - from) <= limit && Math.abs(v - last) <= gap && !stop(v); v += step) if (test(v)) last = v;
       return last;
     };
-    return labels.map(({ box }) => {
+    const boxes = labels.map(({ box }) => [box[0] * W, box[1] * H, box[2] * W, box[3] * H]);
+    return labels.map(({ box, lines = 1 }, i) => {
       let [x1, y1, x2, y2] = [box[0] * W, box[1] * H, box[2] * W, box[3] * H].map(Math.round);
-      const h = Math.max(4, y2 - y1);
-      const bg0 = ringBg(x1, y1, x2, y2, h * 0.7);
-      const ink = (x, y) => dist(at(x, y), bg0) > 60;
-      const col = (a, b) => x => { for (let y = a; y <= b; y++) if (ink(x, y)) return true; return false; };
-      const row = (a, b) => y => { for (let x = a; x <= b; x++) if (ink(x, y)) return true; return false; };
+      const h = Math.max(4, (y2 - y1) / lines);  // 한 줄 높이
+      const bg0 = ringBg(x1, y1, x2, y2, h * 0.35);  // 가깝게 재야 색 있는 버튼 안의 글자에서 버튼 색이 배경이 된다
+      // 글자가 있는 줄 = 배경색 픽셀과 다른 색 픽셀이 섞인 줄. 다른 색만 있는 줄은 다른 배경이다
+      // (파란 버튼 안 흰 글씨에서, 버튼 밖 흰 여백까지 글자로 보고 넓히지 않도록)
+      const mixed = pts => {
+        let ink = false, bg = false;
+        for (const p of pts) {
+          const d = dist(p, bg0);
+          if (d > 60) ink = true; else if (d < 30) bg = true;
+          if (ink && bg) return true;
+        }
+        return false;
+      };
+      const col = (a, b) => x => mixed(function* () { for (let y = a; y <= b; y++) yield at(x, y); }());
+      const row = (a, b) => y => mixed(function* () { for (let x = a; x <= b; x++) yield at(x, y); }());
+      // 다른 라벨 자리에 닿으면 멈춘다. 그대로 넓히면 옆의 번역하지 않은 글자(품번 같은 숫자)를 덮어 가린다
+      const others = boxes.filter((_, j) => j !== i);
+      const hitCol = (a, b) => x => others.some(o => x >= o[0] && x <= o[2] && Math.min(b, o[3]) - Math.max(a, o[1]) > h * 0.3);
+      const hitRow = (a, b) => y => others.some(o => y >= o[1] && y <= o[3] && Math.min(b, o[2]) - Math.max(a, o[0]) > h * 0.3);
       // 위아래 먼저 (아랫부분 획), 그다음 좌우 (낱말 사이 빈칸은 건너뛴다)
-      y2 = grow(y2, 1, h * 0.7, Math.max(1, h * 0.08), row(x1, x2));
-      y1 = grow(y1, -1, h * 0.5, Math.max(1, h * 0.08), row(x1, x2));
-      x2 = grow(x2, 1, h * 2, h * 0.5, col(y1, y2));
-      x1 = grow(x1, -1, h * 2, h * 0.5, col(y1, y2));
+      y2 = grow(y2, 1, h * 0.7, Math.max(1, h * 0.08), row(x1, x2), hitRow(x1, x2));
+      y1 = grow(y1, -1, h * 0.5, Math.max(1, h * 0.08), row(x1, x2), hitRow(x1, x2));
+      // 모델이 긴 줄의 끝을 한참 못 미치게 잡기도 해서 (사양 목록에서 100px 이상) 좌우는 멀리까지 본다
+      x2 = grow(x2, 1, h * 10, h * 0.5, col(y1, y2), hitCol(y1, y2));
+      x1 = grow(x1, -1, h * 10, h * 0.5, col(y1, y2), hitCol(y1, y2));
       const m = Math.max(1, h * 0.12);
       const bg = ringBg(x1, y1, x2, y2, m + 2);
       const inside = [];
@@ -140,13 +158,13 @@
     try { covers = analyze(); } catch { covers = fallback(); }  // 캔버스를 못 쓰면 기본 흰 바탕
     labels.forEach((lb, i) => {
       let n = null;
-      if (lb.ko) {
+      if (lb.ko && lb.ko !== lb.text) {  // 번역해도 그대로인 것(고유명사, 제품명)은 원본을 가리지 않는다
         n = document.createElement('div');
         n.className = 'lb';
         n.textContent = lb.ko;
         n.title = '원문: ' + lb.text;
         if (covers[i].bg) { n.style.background = covers[i].bg; n.style.color = covers[i].fg; }
-      } else if (/[^\W\d_]{2}/u.test(lb.text) && {{ failed|tojson }}) {
+      } else if (!lb.ko && /[^\W\d_]{2}/u.test(lb.text) && {{ failed|tojson }}) {
         n = document.createElement('div');
         n.className = 'fail';
         n.title = '번역 실패: ' + lb.text;
@@ -168,15 +186,17 @@
       const h = covers[i].h * s;
       Object.assign(n.style, { left: x1 + 'px', top: y1 + 'px', width: x2 - x1 + 'px', height: y2 - y1 + 'px' });
       if (n.className === 'fail') return;
-      n.classList.remove('wrap');
-      let size = h * 0.9;
+      const multi = (labels[i].lines || 1) > 1;  // 여러 줄 문단은 처음부터 줄을 바꿔 채운다
+      n.classList.toggle('wrap', multi);
+      n.classList.toggle('block', multi);
+      let size = h * 0.9;  // h는 원문 한 줄 높이
       const fits = () => n.scrollWidth <= n.clientWidth + 1 && n.scrollHeight <= n.clientHeight + 1;
       n.style.fontSize = size + 'px';
-      while (!fits() && size > h * 0.6) n.style.fontSize = (size *= 0.92) + 'px';
-      if (!fits()) {  // 한 줄로는 너무 작아지면 줄을 바꿔서 다시 맞춘다
-        n.classList.add('wrap');
-        while (!fits() && size > 7) n.style.fontSize = (size *= 0.92) + 'px';
+      if (!multi) {
+        while (!fits() && size > h * 0.6) n.style.fontSize = (size *= 0.92) + 'px';
+        if (!fits()) n.classList.add('wrap');  // 한 줄로는 너무 작아지면 줄을 바꿔서 다시 맞춘다
       }
+      while (!fits() && size > 7) n.style.fontSize = (size *= 0.92) + 'px';
     });
   }
 
