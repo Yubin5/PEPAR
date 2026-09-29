@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>번역 중 · PEPAR</title>
+{% include "base.css.html" %}
+<style>
+  .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; margin: 16px 0 8px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .4s; }
+  #status { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .err { color: var(--err); }
+  .src { overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<main>
+  <h1>PEPAR</h1>
+  {% if error %}
+    <p class="sub err">{{ error }}</p>
+    <p><a href="/">처음으로</a></p>
+  {% else %}
+  <p class="sub"><a class="src" href="{{ src_url }}" target="_blank" rel="noopener">{{ src_url or key }}</a><br>{{ model }}로 번역 중</p>
+  <div class="card">
+    <div id="stage">준비 중…</div>
+    <div class="bar"><div id="fill"></div></div>
+    <div id="status"></div>
+  </div>
+  <script>
+    const api = {{ ('/api/jobs/' ~ model ~ '/' ~ key)|tojson }};
+    const $ = s => document.getElementById(s);
+    const fmt = s => s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
+    async function poll() {
+      let j;
+      try { j = await (await fetch(api)).json(); }
+      catch { setTimeout(poll, 3000); return; }
+      if (j.stage === 'done') { location.reload(); return; }
+      if (j.stage === 'error') {
+        $('stage').innerHTML = '<span class="err"></span>';
+        $('stage').firstChild.textContent = '실패: ' + j.message;
+        $('status').innerHTML = '<a href="">다시 시도</a> (이미 번역한 부분은 이어서 진행)';
+        return;
+      }
+      if (j.stage === 'unknown') { location.reload(); return; }  // 서버 재시작 등으로 작업이 사라짐 → 다시 등록
+      if (j.stage === 'queued') {
+        $('stage').textContent = `대기 중 · 앞선 작업 ${j.ahead ?? 0}개`;
+        const w = j.wait ? `약 ${fmt(j.wait)}${j.wait_partial ? ' 이상' : ''} 뒤 시작` : (j.wait_partial ? '시작 시각 계산 중' : '');
+        $('status').textContent = w;
+      }
+      if (j.stage === 'fetching') $('stage').textContent = '원문을 가져오는 중…';
+      if (j.stage === 'translating') {
+        $('stage').textContent = j.done === 0 ? '번역 중 (모델을 불러오는 중일 수 있음)' : '번역 중';
+        $('fill').style.width = (j.total ? j.done / j.total * 100 : 0) + '%';
+        $('status').textContent = `${j.done} / ${j.total} 블록` + (j.eta != null ? ` · 남은 시간 약 ${fmt(j.eta)}` : '');
+      }
+      setTimeout(poll, 2000);
+    }
+    poll();
+  </script>
+  {% endif %}
+</main>
+</body>
+</html>
