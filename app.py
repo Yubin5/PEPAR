@@ -12,18 +12,23 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
+from PIL import Image
 
+import ocr
 import translator
 
 CACHE = Path(__file__).parent / "cache"
 CACHE.mkdir(exist_ok=True)
-SOURCES = CACHE / "sources.json"  # key → {kind, url}. web 문서는 key(해시)만으로 URL을 알 수 없어서 기록해 둔다.
-KEY_RE = re.compile(r"^(\d{4}\.\d{4,5}(v\d+)?|w-[0-9a-f]{12})$")
+SOURCES = CACHE / "sources.json"  # key → {kind, url[, name]}. web 문서는 key(해시)만으로 URL을 알 수 없어서 기록해 둔다.
+IMAGES = CACHE / "images"  # 업로드한 원본 이미지 i-<hash>.<png|jpg>. 모델별 번역이 같이 쓴다
+IMAGES.mkdir(exist_ok=True)
+KEY_RE = re.compile(r"^(\d{4}\.\d{4,5}(v\d+)?|[wi]-[0-9a-f]{12})$")
 MODEL_RE = re.compile(r"^[\w.\-]+$")
-ACTIVE = ("queued", "fetching", "translating")
+ACTIVE = ("queued", "fetching", "reading", "translating")
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 업로드 상한 (이미지 자체 한도는 ocr.MAX_UPLOAD)
 
 # llama-server가 parallel=1이라 번역은 한 번에 하나씩 순서대로 처리한다.
 jobs: dict[str, dict] = {}  # "model/key" → 상태
@@ -39,7 +44,8 @@ sec_per_block = 7.0
 # ---------------------------------------------------------------- 저장소
 # cache/<model>/<key>.html        번역 결과
 # cache/<model>/<key>.meta.json   번역 시각·제목·URL·블록 수 등
-# cache/<model>/<key>.partial.json 이어서 번역하기 위한 체크포인트
+# cache/<model>/<key>.partial.json 이어서 번역하기 위한 체크포인트 (이미지는 OCR 결과도)
+# cache/images/<key>.<png|jpg>    업로드한 이미지
 
 
 def load_sources() -> dict:
@@ -61,6 +67,8 @@ def source_for(key: str) -> translator.Source | None:
     if key.startswith("w-"):
         info = load_sources().get(key)
         return translator.Source("web", key, info["url"]) if info else None
+    if key.startswith("i-"):
+        return translator.Source("image", key, f"/image/{key}") if image_path(key) else None
     return translator.Source("arxiv", key, key)
 
 
@@ -68,7 +76,16 @@ def source_url(key: str) -> str:
     src = source_for(key)
     if not src:
         return ""
-    return src.url if src.kind == "web" else f"https://arxiv.org/abs/{key}"
+    return src.url if src.kind in ("web", "image") else f"https://arxiv.org/abs/{key}"
+
+
+def image_path(key: str) -> Path | None:
+    found = list(IMAGES.glob(f"{key}.*"))
+    return found[0] if found else None
+
+
+def image_name(key: str) -> str:
+    return load_sources().get(key, {}).get("name") or key
 
 
 def model_dir(model: str) -> Path:
@@ -80,7 +97,7 @@ def model_dir(model: str) -> Path:
 def cached_path(model: str, key: str) -> Path | None:
     """arXiv는 버전 지정 시 그 버전, 아니면 캐시된 것 중 최신 버전."""
     d = CACHE / model
-    if key.startswith("w-") or "v" in key:
+    if key.startswith(("w-", "i-")) or "v" in key:
         p = d / f"{key}.html"
         return p if p.exists() else None
     found = sorted(d.glob(f"{key}v*.html"), key=lambda p: int(p.stem.split("v")[-1]))
@@ -120,7 +137,7 @@ def doc_info(p: Path, sources: dict) -> dict:
         "key": key,
         "title": title,
         "url": url,
-        "where": "arXiv" if not key.startswith("w-") else (urlparse(url).hostname or "web"),
+        "where": "이미지" if key.startswith("i-") else "arXiv" if not key.startswith("w-") else (urlparse(url).hostname or "web"),
         "translated_at": meta.get("translated_at") or datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds"),
         "blocks": meta.get("blocks"),
         "failed": meta.get("failed"),
@@ -169,9 +186,14 @@ def worker():
             checkpoint = checkpoint_path(model, key)
             t0 = time.time()
             retry_url = f"/view/{model}/{key}?retry_failed=1"
-            resolved, title, html, failed = translator.run(
-                src, model, progress, checkpoint=checkpoint, retry_url=retry_url
-            )
+            if src.kind == "image":
+                resolved, title = key, image_name(key)
+                job["title"] = title
+                html, failed = translate_image(model, key, title, progress, checkpoint, retry_url)
+            else:
+                resolved, title, html, failed = translator.run(
+                    src, model, progress, checkpoint=checkpoint, retry_url=retry_url
+                )
             out = model_dir(model) / f"{resolved}.html"
             out.write_text(html, encoding="utf-8")
             out.with_suffix(".meta.json").write_text(
@@ -203,6 +225,25 @@ def worker():
             job.update(stage="error", message=f"{type(e).__name__}: {e}")
         job["finished_at"] = time.time()
         save_failed()
+
+
+def translate_image(model, key, title, progress, checkpoint, retry_url) -> tuple[str, int]:
+    """(결과 HTML, 번역 실패 라벨 수). 결과 페이지는 원본 이미지 위에 번역문 라벨을 덮는다.
+
+    라벨은 <key>.labels.json에도 저장해, 보기 화면은 매번 최신 템플릿으로 그린다 (.html은 목록·검색용).
+    """
+    path = image_path(key)
+    labels, failed = ocr.run(model, path.read_bytes(), progress, checkpoint=checkpoint)
+    with Image.open(path) as img:
+        width, height = img.size
+    data = {"title": title, "labels": labels, "failed": failed, "width": width, "height": height}
+    (model_dir(model) / f"{key}.labels.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    with app.app_context():
+        return render_image(model, key, data), failed
+
+
+def render_image(model: str, key: str, data: dict) -> str:
+    return render_template("image_view.html", model=model, key=key, retry_url=f"/view/{model}/{key}?retry_failed=1", **data)
 
 
 def save_failed():
@@ -309,6 +350,53 @@ def open_link():
     return redirect(url_for("view", model=model, key=src.key))
 
 
+@app.post("/upload")
+def upload():
+    """이미지를 받아 저장하고 번역 화면으로 보낸다. 같은 이미지는 같은 key가 되어 캐시를 다시 쓴다."""
+    model = request.form.get("model") or translator.LLM_MODEL
+    if not MODEL_RE.match(model):
+        abort(400)
+    f = request.files.get("image")
+
+    def fail(msg):
+        return render_template("progress.html", error=msg, model=model, key="", src_url=""), 400
+
+    if not f or not f.filename:
+        return fail("이미지 파일을 골라 주세요.")
+    try:
+        models = {m["id"]: m for m in translator.list_models()}
+    except Exception:  # noqa: BLE001 - 목록을 못 가져오면 확인 없이 진행하고, 안 되면 작업이 실패로 알려준다
+        models = {}
+    if model in models and not models[model]["vision"]:
+        vision = ", ".join(m for m in models if models[m]["vision"])
+        return fail(f"{model}은(는) 이미지를 읽지 못하는 모델입니다. 이미지를 지원하는 모델: {vision}")
+    try:
+        data, ext, _, _ = ocr.normalize(f.read(MAX_UPLOAD_READ))
+    except translator.PeparError as e:
+        return fail(str(e))
+    key = ocr.image_key(data)
+    if not image_path(key):
+        (IMAGES / f"{key}.{ext}").write_bytes(data)
+    with sources_lock:
+        sources = load_sources()
+        sources[key] = {"kind": "image", "url": f"/image/{key}", "name": Path(f.filename).name[:200]}
+        SOURCES.write_text(json.dumps(sources, ensure_ascii=False, indent=1), encoding="utf-8")
+    return redirect(url_for("view", model=model, key=key))
+
+
+MAX_UPLOAD_READ = ocr.MAX_UPLOAD + 1  # 한도를 넘었는지 알 수 있을 만큼만 읽는다
+
+
+@app.get("/image/<key>")
+def image(key):
+    if not KEY_RE.match(key) or not key.startswith("i-"):
+        abort(404)
+    path = image_path(key)
+    if not path:
+        abort(404)
+    return send_file(path, max_age=86400)
+
+
 @app.get("/view/<model>/<key>")
 def view(model, key):
     if not MODEL_RE.match(model) or not KEY_RE.match(key):
@@ -325,11 +413,15 @@ def view(model, key):
             start_job(model, key)
         return redirect(url_for("view", model=model, key=key))
     if not active:
+        labels = CACHE / model / f"{key}.labels.json"
+        if key.startswith("i-") and labels.exists():
+            return render_image(model, key, json.loads(labels.read_text(encoding="utf-8")))
         path = cached_path(model, key)
         if path:
             return path.read_text(encoding="utf-8")
         start_job(model, key)  # 처음이거나, 지난번에 실패했으면 이어서 다시 시도
-    return render_template("progress.html", error="", model=model, key=key, src_url=source_url(key))
+    title = image_name(key) if key.startswith("i-") else ""
+    return render_template("progress.html", error="", model=model, key=key, src_url=source_url(key), title=title)
 
 
 @app.get("/paper/<key>")
@@ -344,7 +436,7 @@ def old_paper_link(key):
 def api_docs():
     """번역한 문서 전체, 최근 번역 순."""
     sources = load_sources()
-    docs = [doc_info(p, sources) for p in CACHE.glob("*/*.html")]
+    docs = [doc_info(p, sources) for p in CACHE.glob("*/*.html") if p.parent != IMAGES]
     docs.sort(key=lambda d: d["translated_at"], reverse=True)
     return jsonify(docs)
 
@@ -359,7 +451,7 @@ def api_delete_doc(model, key):
         return jsonify(error="번역 중인 문서는 지울 수 없습니다."), 409
     d = CACHE / model
     removed = 0
-    for name in (f"{key}.html", f"{key}.meta.json", f"{key}.partial.json"):
+    for name in (f"{key}.html", f"{key}.meta.json", f"{key}.partial.json", f"{key}.labels.json"):
         p = d / name
         if p.exists():
             p.unlink()
@@ -368,6 +460,9 @@ def api_delete_doc(model, key):
     jobs.pop(f"{model}/{key}", None)
     if d.exists() and not any(d.iterdir()):
         d.rmdir()
+    others = [p for p in CACHE.glob(f"*/{key}.*") if p.parent != IMAGES]
+    if key.startswith("i-") and not others and (p := image_path(key)):
+        p.unlink()  # 이 이미지를 번역한 모델이 더 없으면 원본도 지운다
     if not removed:
         return jsonify(error="문서를 찾지 못했습니다."), 404
     return jsonify(ok=True)

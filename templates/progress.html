@@ -20,7 +20,7 @@
     <p class="sub err">{{ error }}</p>
     <p><a href="/">처음으로</a></p>
   {% else %}
-  <p class="sub"><a class="src" href="{{ src_url }}" target="_blank" rel="noopener">{{ src_url or key }}</a><br>{{ model }}로 번역 중</p>
+  <p class="sub"><a class="src" href="{{ src_url }}" target="_blank" rel="noopener">{{ title or src_url or key }}</a><br>{{ model }}로 번역 중</p>
   <div class="card">
     <div id="stage">준비 중…</div>
     <div class="bar"><div id="fill"></div></div>
@@ -48,6 +48,7 @@
         $('status').textContent = w;
       }
       if (j.stage === 'fetching') $('stage').textContent = '원문을 가져오는 중…';
+      if (j.stage === 'reading') $('stage').textContent = '이미지에서 글자를 읽는 중… (모델을 불러오는 중일 수 있음)';
       if (j.stage === 'translating') {
         $('stage').textContent = j.done === 0 ? '번역 중 (모델을 불러오는 중일 수 있음)' : '번역 중';
         $('fill').style.width = (j.total ? j.done / j.total * 100 : 0) + '%';

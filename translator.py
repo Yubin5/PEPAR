@@ -49,7 +49,7 @@ class LLMUnavailable(PeparError):
 
 @dataclass
 class Source:
-    kind: str  # "arxiv" | "web"
+    kind: str  # "arxiv" | "web" | "image"
     key: str  # 캐시/URL에 쓰는 식별자: "2412.13742" 또는 "w-<hash>"
     url: str  # web이면 원본 URL, arxiv면 논문 ID
 
@@ -317,11 +317,15 @@ Rules:
 STYLE = {
     "arxiv": "This is an academic paper: use the written plain style (~한다, ~이다), not 합니다체.",
     "web": "Use the written plain style (~한다, ~이다) for prose; translate short UI labels and headings concisely.",
+    "image": "These are text labels read from an image (a diagram, figure, screenshot, sign or photo). Each Korean label is "
+    "drawn over the original in the same box, so keep it about as short as the original; use noun phrases for labels. "
+    "Unlike rule 5, translate common technical terms into Korean (e.g. 'hidden state' → '은닉 상태', 'Input Encoder' → "
+    "'입력 인코더') and do not add the original in parentheses; keep only proper names, acronyms, symbols and code as they are.",
 }
 
 
 def list_models() -> list[dict]:
-    """라우터에 등록된 모델 목록: [{id, loaded}]."""
+    """라우터에 등록된 모델 목록: [{id, loaded, vision}]."""
     url = LLM_URL.rsplit("/chat/completions", 1)[0] + "/models"
     r = requests.get(url, timeout=5)
     r.raise_for_status()
@@ -329,7 +333,11 @@ def list_models() -> list[dict]:
     for m in r.json().get("data", []):
         if m.get("id") == "default":
             continue
-        out.append({"id": m["id"], "loaded": (m.get("status") or {}).get("value") in ("loaded", "sleeping")})
+        out.append({
+            "id": m["id"],
+            "loaded": (m.get("status") or {}).get("value") in ("loaded", "sleeping"),
+            "vision": "image" in (m.get("architecture") or {}).get("input_modalities", []),
+        })
     return out
 
 
