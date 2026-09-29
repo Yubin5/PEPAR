@@ -293,7 +293,8 @@ def _blocks(labels: list[dict], W: int, H: int) -> list[dict]:
             lx1, ly1, lx2, ly2 = bl["last"]
             lh = ly2 - ly1
             # 줄 간격이 줄 높이의 0.6배 이내이고 글자 크기가 거의 같을 때만 (제목 아래 별점 줄 같은 건 따로 둔다)
-            if not (ly1 < y1 and y1 - ly2 < 0.6 * lh and 0.8 < h / lh < 1.25):
+            # 크기는 여유 있게 본다 (밈의 두 줄 자막을 모델이 68px, 88px로 돌려주기도 한다)
+            if not (ly1 < y1 and y1 - ly2 < 0.6 * lh and 0.7 < h / lh < 1.4):
                 continue
             bx1, _, bx2, _ = px(bl["box"])
             aligned = abs(x1 - bx1) < 1.5 * lh or abs((x1 + x2) / 2 - (bx1 + bx2) / 2) < 1.5 * lh
@@ -301,14 +302,20 @@ def _blocks(labels: list[dict], W: int, H: int) -> list[dict]:
                 target = bl
                 break
         if target is None:
-            blocks.append({"text": lb["text"], "box": list(lb["box"]), "lines": 1, "last": (x1, y1, x2, y2)})
+            blocks.append({"text": lb["text"], "box": list(lb["box"]), "lines": 1, "last": (x1, y1, x2, y2), "lefts": [x1], "mids": [(x1 + x2) / 2], "h": h})
             continue
         b = target["box"]
         target["text"] = _join(target["text"], lb["text"])
         target["box"] = [min(b[0], lb["box"][0]), min(b[1], lb["box"][1]), max(b[2], lb["box"][2]), max(b[3], lb["box"][3])]
         target["lines"] += 1
         target["last"] = (x1, y1, x2, y2)
-    return [{k: v for k, v in bl.items() if k != "last"} for bl in blocks]
+        target["lefts"].append(x1)
+        target["mids"].append((x1 + x2) / 2)
+    for bl in blocks:  # 줄의 왼쪽 끝보다 가운데가 더 잘 맞으면 가운데 정렬 (밈 자막, 제목)
+        spread = lambda v: max(v) - min(v)  # noqa: E731
+        if bl["lines"] > 1 and spread(bl["lefts"]) > 0.1 * bl["h"] and spread(bl["mids"]) < 0.5 * spread(bl["lefts"]):
+            bl["align"] = "center"
+    return [{k: v for k, v in bl.items() if k not in ("last", "lefts", "mids", "h")} for bl in blocks]
 
 
 def read_image(model: str, data: bytes, on_progress) -> list[dict]:
