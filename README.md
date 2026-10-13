@@ -1,5 +1,7 @@
 <img width="2560" height="1380" alt="pepar" src="https://github.com/user-attachments/assets/f5dccf31-6faa-4885-8676-e2330cf55db1" />
 
+<img width="1280" height="680" alt="image" src="https://github.com/user-attachments/assets/f4fa20ac-8b9f-48c3-9439-c23711429243" />
+
 # PEPAR
 
 ## 프로젝트 소개
