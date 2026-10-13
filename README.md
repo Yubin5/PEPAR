@@ -36,14 +36,7 @@
   - [x] llama.cpp 연동과 포트 설정을 담을 config.toml
   - [x] 보안 수단 검토
 
-- [ ] 배포
-
-## 참고 자료
-
-- Claude 대화 세션
-- llama.cpp: https://github.com/ggml-org/llama.cpp
-- 프롬프트 캐시(cache-ram) 관련: https://github.com/ggml-org/llama.cpp/pull/16391
-- arXiv HTML (LaTeXML 변환): https://info.arxiv.org/about/accessible_HTML.html
+- [x] 배포
 
 ## 실행 방법
 
@@ -51,16 +44,16 @@
 
 ```bash
 pip install -r requirements.txt
-cp config.example.toml config.toml   # llm_url 등 수정
-python app.py                        # http://127.0.0.1:8765
+cp config.example.toml config.toml
+python app.py                         # http://127.0.0.1:8765
 ```
 
-설정은 `config.toml` 또는 환경변수(`PEPAR_HOST`, `PEPAR_PORT`, `PEPAR_LLM_URL`, `PEPAR_CACHE_DIR`, `PEPAR_PASSWORD`, `PEPAR_TRUSTED_PROXIES`, `PEPAR_ALLOW_PRIVATE_URLS`, `PEPAR_KEEP_SCRIPTS`)로 하며, 환경변수가 우선합니다.
+설정은 `config.toml` 파일 수정을 통해 하세요.
 
 ### Docker
 
 ```bash
-docker compose up -d   # http://127.0.0.1:8765
+docker compose up -d                  # http://127.0.0.1:8765
 ```
 
 `.env` 또는 환경변수로 `PEPAR_PORT`, `PEPAR_LLM_URL`, `PEPAR_PASSWORD`, `PEPAR_TRUSTED_PROXIES`를 줄 수 있고, 캐시와 로그인 세션은 `pepar-cache` 볼륨에 남습니다.
@@ -70,16 +63,6 @@ docker compose up -d   # http://127.0.0.1:8765
 ```bash
 docker compose -f compose.yml -f compose.host.yml up -d
 ```
-
-> Cloudflare Tunnel 뒤에서 쓰려면 `trusted_proxies = ["127.0.0.1", "::1"]`을 설정하세요(cloudflared가 같은 호스트일 때. Docker 사이드카면 그 네트워크의 CIDR). 그래야 로그인 시도 제한이 접속자 IP별로 적용됩니다. 설정하지 않으면 모든 접속자가 한 명으로 취급돼, 한 명이 틀리면 전원이 잠깁니다.
-
-> 기본은 인증이 없습니다. `config.toml`의 `password`(또는 `PEPAR_PASSWORD`)를 정하면 비밀번호 로그인이 걸립니다(5번 틀리면 해당 IP는 15분간 잠김). 암호화되지 않으니 인터넷에 열 때는 HTTPS 프록시 뒤에 두세요.
-
----
-
-## 라이선스
-
-[MIT](LICENSE)
 
 ---
 
@@ -157,3 +140,27 @@ docker compose -f compose.yml -f compose.host.yml up -d
   - repo에서 (비공개)배포
 
 <br>
+
+### 5주차 초과(2026-09-30 ~)
+
+- 이번 주에 한 일:
+  - 프런트엔드 다듬기(이미지 가독성 등)
+  - 재번역 편의성(모델 변경)
+  - 도커 패키징하여 배포 준비
+- 어려웠던 점:
+  - 일정 조율, 보안 관련 검토
+  - git 사용 미숙
+- 아쉬웠던 점:
+  - 이미지 번역 완성도
+  - 번역 언어 선택 기능 빠짐
+  - 파비콘 제작
+
+
+---
+
+## 참고 자료
+
+- Claude 대화 세션
+- llama.cpp: https://github.com/ggml-org/llama.cpp
+- 프롬프트 캐시(cache-ram) 관련: https://github.com/ggml-org/llama.cpp/pull/16391
+- arXiv HTML (LaTeXML 변환): https://info.arxiv.org/about/accessible_HTML.html
