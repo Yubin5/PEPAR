@@ -1,4 +1,4 @@
-<img width="1280" height="719" alt="image" src="https://github.com/user-attachments/assets/62f299a9-fe7d-4ad8-88e9-c760d731a3f8" />
+<img width="1280" height="719" alt="image" src="https://github.com/user-attachments/assets/c021eea9-6e84-4219-8378-ddf2ef8cef51" /><img width="1280" height="719" alt="image" src="https://github.com/user-attachments/assets/62f299a9-fe7d-4ad8-88e9-c760d731a3f8" />
 
 # PEPAR
 
@@ -13,6 +13,8 @@
 ## 구조
 
 <img width="4016" height="2289" alt="그림1" src="https://github.com/user-attachments/assets/0ec1843b-c1d4-453b-b26b-58c5ecc44be0" />
+<img width="4004" height="2057" alt="그림2" src="https://github.com/user-attachments/assets/ee1b7381-3aaf-4e4e-8942-3906cf545531" />
+
 
 - 백엔드: Python 3.11, Flask, requests, BeautifulSoup + lxml
 - LLM: llama.cpp 라우터(SYCL) + Intel Arc Pro B50 16GB, gemma4-12b 권장
