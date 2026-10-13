@@ -12,7 +12,7 @@
 
 ## 구조
 
-<img width="2000" height="1330" alt="pipeline" src="https://github.com/user-attachments/assets/56da5dc2-2d1c-4ed5-a1ad-62c19ea475ec" />
+<img width="4016" height="2289" alt="그림1" src="https://github.com/user-attachments/assets/0ec1843b-c1d4-453b-b26b-58c5ecc44be0" />
 
 - 백엔드: Python 3.11, Flask, requests, BeautifulSoup + lxml
 - LLM: llama.cpp 라우터(SYCL) + Intel Arc Pro B50 16GB, gemma4-12b 권장
