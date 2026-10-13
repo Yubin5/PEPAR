@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PEPAR</title>
+{% include "base.css.html" %}
+<style>
+  main { max-width: 360px; padding-top: 18vh; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; font: inherit; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  button { padding: 12px 18px; font: inherit; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+  .err { color: var(--err); margin: 10px 0 0; font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>PEPAR</h1>
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{ next }}">
+    <input type="password" name="password" placeholder="비밀번호" autocomplete="current-password" autofocus required>
+    <button type="submit">확인</button>
+  </form>
+  {% if error %}<p class="err">{{ error }}</p>{% endif %}
+</main>
+</body>
+</html>

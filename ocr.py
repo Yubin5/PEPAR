@@ -1,20 +1,18 @@
-"""이미지 속 글자를 로컬 LLM(비전)으로 위치와 함께 읽고, 라벨마다 번역한다.
-
-결과 페이지는 원본 이미지 위의 각 라벨 자리에 번역문을 덮어 보여준다.
-"""
+"""이미지 속 글자를 비전 LLM으로 위치와 함께 읽고 라벨마다 번역한다."""
 
 import base64
 import hashlib
 import io
 import json
 import re
+import sys
 from collections import Counter
 
 from PIL import Image, ImageOps
 
 import translator
 
-MAX_SIDE = 2048  # 이보다 큰 이미지는 줄인다. 모델 쪽 비전 인코더가 어차피 축소하므로 잃는 게 없다
+MAX_SIDE = 2048  # 이보다 큰 이미지는 줄인다 (모델 비전 인코더가 어차피 축소한다)
 MAX_UPLOAD = 20 * 1024 * 1024
 
 OCR_PROMPT = (
@@ -24,7 +22,7 @@ OCR_PROMPT = (
     "with coordinates normalized to 0-1000. Transcribe the text exactly."
 )
 
-# 모델 출력을 이 스키마로 강제한다. 스키마 없이 받으면 12b가 끝을 못 내고 쓰레기 토큰을 이어 붙인다
+# 출력을 스키마로 강제한다 (없으면 12b가 끝을 못 내고 쓰레기 토큰을 붙인다)
 OCR_SCHEMA = {
     "type": "array",
     "items": {
@@ -38,22 +36,20 @@ OCR_SCHEMA = {
 }
 
 
-# ---------------------------------------------------------------- 업로드
 
 
 def normalize(data: bytes) -> tuple[bytes, str, int, int]:
-    """업로드된 이미지를 (저장할 바이트, 확장자, 너비, 높이)로.
-
-    EXIF 회전을 픽셀에 적용해 둔다. 브라우저는 EXIF대로 돌려 보여주는데 모델은 무시하므로,
-    그대로 두면 폰 사진에서 라벨 위치가 어긋난다.
-    """
+    """(저장할 바이트, 확장자, 너비, 높이). EXIF 회전을 픽셀에 적용한다 (모델은 EXIF를 무시해 라벨 위치가 어긋난다)."""
     if len(data) > MAX_UPLOAD:
         raise translator.PeparError(f"이미지가 너무 큽니다 (최대 {MAX_UPLOAD // 1024 // 1024}MB).")
     try:
         img = Image.open(io.BytesIO(data))
         img.load()
+    except Image.DecompressionBombError as e:
+        raise translator.PeparError("이미지 해상도가 너무 큽니다.") from e
     except Exception as e:  # noqa: BLE001 - Pillow는 형식마다 다른 예외를 낸다
-        raise translator.PeparError(f"이미지를 열 수 없습니다: {e}") from e
+        print(f"[pepar] 이미지 열기 실패: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        raise translator.PeparError("이미지를 열 수 없습니다. 지원하는 형식(PNG, JPEG, WebP 등)인지, 파일이 손상되지 않았는지 확인해 주세요.") from e
     photo = (img.format or "").upper() in ("JPEG", "MPO")  # 사진은 JPEG으로, 나머지(스크린샷·도표)는 PNG로
     img = ImageOps.exif_transpose(img)
     img.thumbnail((MAX_SIDE, MAX_SIDE))
@@ -71,15 +67,10 @@ def image_key(data: bytes) -> str:
     return "i-" + hashlib.sha256(data).hexdigest()[:12]
 
 
-# ---------------------------------------------------------------- OCR
 
 
 def _square(img: Image.Image) -> tuple[bytes, float, float]:
-    """이미지 오른쪽·아래를 테두리 색으로 채워 정사각형으로 만든다. (PNG 바이트, 가로 배율, 세로 배율).
-
-    12b는 가로나 세로로 긴 이미지에서 세로 좌표가 수십 px씩 틀린다 (900x520에서 최대 55px).
-    정사각형으로 채워 보내면 4px 이내로 맞는다. 배율은 정사각형 기준 좌표를 원본 기준으로 바꾸는 데 쓴다.
-    """
+    """정사각형으로 채워 보낸다 (12b는 긴 이미지에서 좌표가 수십 px 틀린다). (PNG 바이트, 가로 배율, 세로 배율)."""
     w, h = img.size
     side = max(w, h)
     edge = [img.getpixel((x, y)) for x in range(0, w, max(1, w // 50)) for y in (0, h - 1)]
@@ -98,8 +89,7 @@ def extract(model: str, img: Image.Image) -> list[dict]:
     body = {
         "model": model,
         "temperature": 0,
-        # 정상 조각은 800토큰 안쪽이다. 게임 화면처럼 반복에 빠지면 8192까지 8분을 쓰므로 일찍 끊는다
-        # (잘려도 완성된 라벨까지는 아래에서 살린다)
+        # 정상 조각은 800토큰 안쪽이라 반복에 빠지면 일찍 끊는다 (잘려도 완성된 라벨은 살린다)
         "max_tokens": 2048,
         "chat_template_kwargs": {"enable_thinking": False},
         "response_format": {"type": "json_schema", "json_schema": {"name": "labels", "schema": OCR_SCHEMA}},
@@ -134,11 +124,8 @@ def extract(model: str, img: Image.Image) -> list[dict]:
     return labels
 
 
-# ---------------------------------------------------------------- 큰 이미지 나눠 읽기
-# 큰 캡처를 통째로 보내면 모델이 줄여서 보느라 작은 글자를 잘못 읽거나 지어낸다
-# (2048x963 쇼핑몰 캡처에서 제품명을 틀리고, 없는 줄을 15번 되풀이했다).
-# 그래서 여백(빈 줄)을 따라 조각으로 나눠 따로 읽는다. 여백에서 자르므로 글자가 잘리지 않는다.
-# 여백이 없을 때만 겹치게 억지로 자르고, 그 경계에 걸린 라벨은 버린다 (옆 조각에 온전히 들어 있다).
+# 큰 이미지는 여백(빈 줄)을 따라 조각으로 나눠 따로 읽는다 (통째로 보내면 모델이 줄여 보느라 작은 글자를 틀리거나 지어낸다).
+# 여백이 없을 때만 겹치게 억지로 자르고, 그 경계에 걸린 라벨은 버린다.
 
 TILE = 1024  # 가로세로가 이보다 큰 영역은 나눈다
 MIN_GAP = 6  # 이만큼 이상 이어진 빈 줄에서만 자른다 (낱말 사이 빈칸보다 넓게)
@@ -147,7 +134,7 @@ EDGE = 8  # 억지로 자른 경계에서 이만큼 안쪽까지 닿은 라벨�
 
 
 def _uniform(hist: list[int], n: int) -> bool:
-    """한 줄의 밝기 히스토그램. 거의 모든 픽셀이 그 줄의 대표 밝기 근처면 빈 줄 (여백이나 구분선)."""
+    """거의 모든 픽셀이 한 밝기면 빈 줄 (여백·구분선)."""
     acc = 0
     for med, c in enumerate(hist):
         acc += c
@@ -189,7 +176,7 @@ def _cut(flags: list[bool]) -> int | None:
 
 
 def _trim(gray: Image.Image, box, hard):
-    """가장자리 여백을 잘라낸 (box, hard). 내용이 없으면 None. 여백이 잘린 쪽은 억지 경계가 아니게 된다."""
+    """가장자리 여백을 잘라낸 (box, hard). 내용이 없으면 None."""
     x0, y0, x1, y1 = box
     rows = [i for i, b in enumerate(_blank(gray, box, 0)) if not b]
     if not rows:
@@ -215,7 +202,7 @@ def _tiles(gray: Image.Image, box, hard=(False,) * 4, out=None) -> list:
     if w <= TILE and h <= TILE:
         out.append((box, hard))
         return out
-    # 너무 긴 쪽부터 빈 줄을 찾고, 없으면 다른 쪽이라도 (위쪽 메뉴 줄을 떼어내면 그 아래에서 세로 여백이 생긴다)
+    # 긴 쪽부터 빈 줄을 찾고, 없으면 다른 쪽이라도
     for axis in sorted((0, 1), key=lambda a: -(h if a == 0 else w)):
         c = _cut(_blank(gray, box, axis))
         if c is None:
@@ -266,8 +253,7 @@ REPEAT = 3  # 한 조각에서 같은 글자가 이만큼 나오면 모델이 �
 
 
 def _drop_repeats(labels: list[dict]) -> list[dict]:
-    """글자가 빽빽하거나 사진이 있으면 12b가 같은 글자를 되풀이해 지어낸다.
-    (쇼핑몰 캡처에서 제품명 15번, 뉴스 사진 위에 'CDU-CSU' 5번) 그런 글자는 통째로 버린다."""
+    """글자가 빽빽하거나 사진이 있으면 12b가 같은 글자를 되풀이해 지어낸다. 그런 글자는 통째로 버린다."""
     count = Counter((lb.get("tile", 0), lb["text"]) for lb in labels)
     return [lb for lb in labels if count[(lb.get("tile", 0), lb["text"])] < REPEAT]
 
@@ -276,7 +262,7 @@ SURROGATE = re.compile(r"[\ud800-\udfff]")
 
 
 def clean(s: str) -> str:
-    """모델이 이모지를 반쪽만(짝 없는 서로게이트) 내놓기도 한다. 그대로 두면 UTF-8로 저장할 때 터진다."""
+    """모델이 짝 없는 서로게이트를 내면 UTF-8 저장이 터지므로 지운다."""
     return SURROGATE.sub("", s)
 
 
@@ -290,9 +276,7 @@ def _join(a: str, b: str) -> str:
 
 
 def _blocks(labels: list[dict], W: int, H: int) -> list[dict]:
-    """모델은 여러 줄 문단을 줄마다 따로 돌려준다. 그대로 번역하면 문장이 줄마다 끊기고,
-    줄 간격이 촘촘해 덮개끼리 겹친다. 바로 아래에 붙어 있고 글자 크기가 비슷하며
-    왼쪽이나 가운데가 맞는 줄은 한 문단으로 합친다. lines는 합친 줄 수 (보기 화면이 글자 크기를 정하는 데 쓴다)."""
+    """여러 줄 문단을 줄마다 따로 번역하면 문장이 끊기고 덮개가 겹친다. 바로 아래·비슷한 글자 크기·왼쪽이나 가운데 정렬인 줄은 한 문단으로 합친다. lines는 합친 줄 수."""
     px = lambda b: (b[0] * W, b[1] * H, b[2] * W, b[3] * H)  # noqa: E731
     blocks = []
     for lb in sorted(labels, key=lambda lb: (lb["box"][1], lb["box"][0])):
@@ -329,7 +313,7 @@ def _blocks(labels: list[dict], W: int, H: int) -> list[dict]:
 
 
 def read_image(model: str, data: bytes, on_progress) -> list[dict]:
-    """이미지 전체의 라벨 [{text, box, lines}]. 크면 나눠 읽고, 줄을 문단으로 합친다."""
+    """이미지 전체의 라벨 [{text, box, lines}]."""
     img = Image.open(io.BytesIO(data)).convert("RGB")
     W, H = img.size
     if W <= TILE and H <= TILE:
@@ -350,14 +334,10 @@ def read_image(model: str, data: bytes, on_progress) -> list[dict]:
     return _blocks([{"text": lb["text"], "box": lb["box"]} for lb in labels], W, H)
 
 
-# ---------------------------------------------------------------- 번역
 
 
 def run(model: str, data: bytes, on_progress, checkpoint=None) -> tuple[list[dict], int]:
-    """(라벨 목록 [{text, box, ko?}], 번역 실패 라벨 수).
-
-    checkpoint에 OCR 결과와 번역문을 저장해 두어, 실패한 라벨만 다시 번역할 때 OCR을 되풀이하지 않는다.
-    """
+    """(라벨 목록, 실패 라벨 수). checkpoint에 OCR 결과와 번역문을 저장해 실패한 라벨만 다시 번역할 때 OCR을 되풀이하지 않는다."""
     saved = {}
     if checkpoint and checkpoint.exists():
         try:

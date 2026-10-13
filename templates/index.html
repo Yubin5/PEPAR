@@ -13,7 +13,8 @@
   select { padding: 10px 12px; }
   label { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 14px; }
   button { padding: 12px 18px; font: inherit; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
-  h2 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 40px 0 10px; display: flex; gap: 8px; align-items: baseline; }
+  h2 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 20px 0 10px; display: flex; gap: 8px; align-items: baseline; }
+  main > section { margin-top: 32px; padding-top: 4px; border-top: 1px solid var(--line); }
   h2 .count { font-weight: 400; font-size: 13px; }
   ul { list-style: none; padding: 0; margin: 0; }
   li { padding: 12px 0; border-bottom: 1px solid var(--line); }
@@ -38,13 +39,13 @@
   dialog h3 { margin: 0 0 8px; font-size: 17px; }
   dialog p { margin: 0 0 18px; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
   dialog .actions { display: flex; gap: 8px; justify-content: flex-end; }
+  dialog select { width: 100%; margin: 0 0 18px; }
   dialog .cancel { background: var(--line); color: var(--fg); }
   dialog .confirm { background: var(--err); }
   mark { background: color-mix(in srgb, var(--accent) 25%, transparent); color: inherit; border-radius: 2px; }
   #search { width: 100%; padding: 10px 12px; margin-bottom: 4px; }
   .empty { color: var(--muted); font-size: 14px; padding: 12px 0; }
 
-  /* 번역 중 */
   #jobs li { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; background: var(--card); }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 10px 0 6px; }
   .bar > div { height: 100%; background: var(--accent); transition: width .5s; }
@@ -57,37 +58,71 @@
   .file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
   .file.drag { border-color: var(--accent); color: var(--fg); }
   .file:focus-within { outline: 2px solid var(--accent); }
+  .linkbtn { background: none; padding: 0; font-size: 13px; color: var(--muted); text-decoration: underline; }
+  .linkbtn:disabled { text-decoration: none; cursor: default; }
   button.secondary { background: var(--line); color: var(--fg); }
-  @media (max-width: 520px) { .row { flex-direction: column; } }
+  [hidden] { display: none !important; }
+
+  .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px 24px; flex-wrap: wrap; margin-bottom: 24px; }
+  .top .sub { margin: 0; }
+  .model select { max-width: 100%; }
+  .logout { font-size: 13px; color: var(--muted); }
+
+  .tabs, .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tabs { margin-bottom: 14px; }
+  .tabs button, .chips button { padding: 6px 14px; font-size: 14px; border-radius: 999px; background: none; color: var(--muted);
+    border: 1px solid var(--line); }
+  .tabs button:hover, .chips button:hover { color: var(--fg); }
+  .tabs button[aria-selected="true"], .chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chips { margin: 0 0 10px; }
+  .chips .n { opacity: .7; margin-left: 4px; font-variant-numeric: tabular-nums; }
+
+  .kind-doc { --k: #2e8b57; } .kind-image { --k: #8e44ad; }
+  .tag.kind { color: color-mix(in srgb, var(--k) 70%, var(--fg)); border-color: color-mix(in srgb, var(--k) 45%, transparent);
+    background: color-mix(in srgb, var(--k) 10%, transparent); }
+  .thumb { flex: none; width: 56px; height: 56px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); background: var(--line); }
+
+  @media (max-width: 520px) { .row { flex-direction: column; } .top { align-items: stretch; } }
   @media (prefers-reduced-motion: reduce) { .bar.indeterminate > div { animation: none; } }
 </style>
 </head>
 <body>
 <main>
-  <h1>PEPAR</h1>
-  <p class="sub">paper translator — 논문, 웹페이지, 이미지를 한국어로</p>
+  <header class="top">
+    <h1>PEPAR</h1>
+    <label class="model">모델
+      <select name="model" id="model" form="form">
+        {% for m in models %}
+        <option value="{{ m.id }}" data-vision="{{ 1 if m.vision else '' }}" {% if m.id == default_model %}selected{% endif %}>{{ m.id }}{% if m.loaded %} · 로드됨{% endif %}{% if m.vision %} · 이미지{% endif %}</option>
+        {% endfor %}
+      </select>
+      {% if auth %}<a class="logout" href="/logout">로그아웃</a>{% endif %}
+    </label>
+  </header>
+  {% if models_error %}<p class="hint warn" style="margin:-12px 0 16px">{{ models_error }}</p>{% endif %}
+
   <div class="card">
-    <form action="/open" method="get" target="_blank" id="form">
-      <div class="row">
-        <input name="url" required autofocus placeholder="arXiv 링크·ID 또는 웹페이지 URL">
-        <button type="submit">번역</button>
+    <div class="tabs" role="tablist" aria-label="번역할 대상">
+      <button type="button" role="tab" id="tab-url" data-tab="url" aria-selected="true">문서</button>
+      <button type="button" role="tab" id="tab-image" data-tab="image" aria-selected="false">이미지</button>
+    </div>
+    <form action="/open" method="get" id="form">
+      <div id="panel-url">
+        <div class="row">
+          <input name="url" required autofocus placeholder="URL">
+          <button type="submit">번역</button>
+        </div>
       </div>
-      <div class="row">
-        <label class="file" id="drop"><input type="file" name="image" id="image" accept="image/*">
-          <span id="file-label">이미지 파일 선택 · 끌어다 놓기 · 붙여넣기(Ctrl+V)</span></label>
-        <button type="submit" class="secondary" id="image-submit" formaction="/upload" formmethod="post"
-          formenctype="multipart/form-data" formnovalidate>이미지 번역</button>
+      <div id="panel-image" hidden>
+        <div class="row">
+          <label class="file" id="drop"><input type="file" name="image" id="image" accept="image/*">
+            <span id="file-label">이미지 선택 · 끌어놓기 · 붙여넣기</span></label>
+          <button type="submit" class="secondary" id="image-submit" formaction="/upload" formmethod="post"
+            formenctype="multipart/form-data" formnovalidate>이미지 번역</button>
+        </div>
+        <p class="hint warn" id="vision-warn" hidden>이 모델은 이미지를 읽지 못합니다. 「· 이미지」가 붙은 모델을 고르세요.</p>
       </div>
-      <label>모델
-        <select name="model" id="model">
-          {% for m in models %}
-          <option value="{{ m.id }}" data-vision="{{ 1 if m.vision else '' }}" {% if m.id == default_model %}selected{% endif %}>{{ m.id }}{% if m.loaded %} · 로드됨{% endif %}{% if m.vision %} · 이미지{% endif %}</option>
-          {% endfor %}
-        </select>
-      </label>
     </form>
-    {% if models_error %}<p class="hint warn">{{ models_error }}</p>{% endif %}
-    <p class="hint">이미지는 글자를 읽어 원래 자리에 번역문을 덮어 보여줍니다. 「· 이미지」가 붙은 모델만 쓸 수 있습니다.<br>결과는 새 탭에서 열립니다. GPU에는 모델이 하나만 올라가므로, 로드되지 않은 모델을 고르면 불러오는 데 1분 정도 더 걸립니다.</p>
   </div>
 
   <section id="jobs-section" hidden>
@@ -97,10 +132,25 @@
 
   <section>
     <h2>번역한 문서 <span class="count" id="docs-count"></span></h2>
-    <input id="search" type="search" placeholder="제목, 사이트, 모델, 번역된 본문 검색">
+    <div class="chips" id="kind-filter" role="group" aria-label="표시할 종류">
+      <button type="button" data-kind="doc" aria-pressed="true">문서<span class="n"></span></button>
+      <button type="button" data-kind="image" aria-pressed="true">이미지<span class="n"></span></button>
+    </div>
+    <input id="search" type="search" placeholder="검색">
     <ul id="docs"></ul>
   </section>
 </main>
+<dialog id="retranslate">
+  <form method="dialog">
+    <h3 id="retranslate-title"></h3>
+    <p id="retranslate-text"></p>
+    <select id="retranslate-model"></select>
+    <div class="actions">
+      <button class="cancel" value="cancel">취소</button>
+      <button value="ok">번역</button>
+    </div>
+  </form>
+</dialog>
 <dialog id="confirm-delete">
   <form method="dialog">
     <h3>번역한 문서 삭제</h3>
@@ -113,7 +163,6 @@
 </dialog>
 <script>
 (() => {
-  // 마지막으로 고른 모델 기억 (브라우저별)
   const sel = document.getElementById('model');
   try {
     const last = localStorage.getItem('pepar-model');
@@ -123,17 +172,29 @@
 
   const $ = id => document.getElementById(id);
 
-  // ---------------------------------------------------------- 이미지 업로드
+  const setTab = name => {
+    for (const b of document.querySelectorAll('.tabs [data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
+    $('panel-url').hidden = name !== 'url';
+    $('panel-image').hidden = name !== 'image';
+    updateVisionWarn();
+    try { localStorage.setItem('pepar-tab', name); } catch {}
+  };
+  const updateVisionWarn = () => { $('vision-warn').hidden = !!sel.selectedOptions[0]?.dataset.vision || !sel.options.length; };
+  for (const b of document.querySelectorAll('.tabs [data-tab]')) b.addEventListener('click', () => setTab(b.dataset.tab));
+  sel.addEventListener('change', updateVisionWarn);
+  try { if (localStorage.getItem('pepar-tab') === 'image') setTab('image'); } catch {}
+
   const fileInput = $('image');
   const showFile = () => {
     const f = fileInput.files[0];
-    $('file-label').textContent = f ? f.name : '이미지 파일 선택 · 끌어다 놓기 · 붙여넣기(Ctrl+V)';
+    $('file-label').textContent = f ? f.name : '이미지 선택 · 끌어놓기 · 붙여넣기';
   };
   const setFile = f => {
     if (!f || !f.type.startsWith('image/')) return false;
     const dt = new DataTransfer();
     dt.items.add(f);
     fileInput.files = dt.files;
+    setTab('image');
     showFile();
     return true;
   };
@@ -149,7 +210,7 @@
   $('image-submit').addEventListener('click', e => {
     if (!fileInput.files.length) { e.preventDefault(); fileInput.click(); return; }
     if (!sel.selectedOptions[0]?.dataset.vision && !confirm(`${sel.value}은(는) 이미지를 읽지 못하는 모델로 보입니다. 그래도 보낼까요?`)) e.preventDefault();
-    // e2b·e4b는 작아서 글자를 지어내거나 위치를 크게 틀린다 (2026-09-29 캡처 테스트)
+    // e2b·e4b는 작아서 글자를 지어내거나 위치를 크게 틀린다
     else if (/-e[24]b$/.test(sel.value) && !confirm(`${sel.value}은(는) 작은 모델이라 글자 위치와 내용이 부정확합니다. gemma4-12b를 권장합니다.\n그래도 ${sel.value}로 번역할까요?`)) e.preventDefault();
   });
   // 주소로 번역할 때는 파일을 같이 보내지 않는다
@@ -163,6 +224,11 @@
   const dur = s => s >= 3600 ? `${Math.floor(s / 3600)}시간 ${Math.round(s % 3600 / 60)}분`
                  : s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
   const host = u => { try { return new URL(u).hostname; } catch { return u || ''; } };
+  // key 접두사 i-는 이미지, 그 외는 문서
+  const kindOf = key => key.startsWith('i-') ? 'image' : 'doc';
+  const KIND_LABEL = { doc: '문서', image: '이미지' };
+  const sourceOf = (key, url) => key.startsWith('w-') ? host(url) : 'arXiv';
+  const kindTag = key => el('span', { className: `tag kind kind-${kindOf(key)}`, textContent: KIND_LABEL[kindOf(key)] });
 
   function when(iso) {
     const d = new Date(iso), s = (Date.now() - d) / 1000;
@@ -173,7 +239,6 @@
     return rel ? `${rel} (${abs})` : abs;
   }
 
-  // text 안의 terms를 <mark>로 감싼 노드 조각
   function highlight(text, terms) {
     const frag = document.createDocumentFragment();
     const ts = terms.filter(Boolean).map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
@@ -183,7 +248,6 @@
     return frag;
   }
 
-  // ---------------------------------------------------------- 번역 중
   let jobKeys = new Set();
 
   function renderJobs(jobs) {
@@ -208,22 +272,31 @@
         status = `대기 중 · 앞선 작업 ${j.ahead}개${w}`;
       } else if (j.stage === 'reading') {
         if (j.total > 1 && j.done) bar.firstChild.style.width = j.done / j.total * 100 + '%'; else bar.classList.add('indeterminate');
-        status = '이미지에서 글자를 읽는 중…' + (j.total > 1 ? ` ${j.done} / ${j.total} 조각` : '')
-               + (j.done === 0 ? ' (모델을 불러오는 중일 수 있음)' : '');
+        status = '이미지에서 글자를 읽는 중…' + (j.total > 1 ? ` ${j.done} / ${j.total} 조각` : '');
       } else if (j.stage === 'fetching' || (j.stage === 'translating' && !j.total)) {
         bar.classList.add('indeterminate');
         status = '원문을 가져오는 중…';
       } else {
         const pct = j.total ? j.done / j.total * 100 : 0;
         if (j.done === 0) bar.classList.add('indeterminate'); else bar.firstChild.style.width = pct + '%';
-        status = j.done === 0 ? `0 / ${j.total} 블록 · 모델을 불러오는 중일 수 있음`
+        status = j.done === 0 ? `0 / ${j.total} 블록`
                : `${j.done} / ${j.total} 블록 (${Math.round(pct)}%)` + (j.eta != null ? ` · 남은 시간 약 ${dur(j.eta)}` : '');
+      }
+      if (j.stage !== 'error') {
+        const stop = el('button', { type: 'button', className: 'linkbtn', textContent: j.cancelling ? '취소 중…' : '취소', disabled: !!j.cancelling });
+        stop.addEventListener('click', async () => {
+          stop.disabled = true;
+          await fetch(`/api/jobs/${encodeURIComponent(j.model)}/${encodeURIComponent(j.key)}`, { method: 'DELETE' }).catch(() => {});
+          pollNow();
+        });
+        status = el('span', {}, status, ' · ', stop);
       }
       return el('li', {},
         el('a', { href, target: '_blank', textContent: j.title || j.url || j.key }),
         el('div', { className: 'meta' },
-          el('span', { textContent: j.key.startsWith('w-') ? host(j.url) : j.key.startsWith('i-') ? '이미지' : 'arXiv' }),
-          el('span', { className: 'tag', textContent: j.model })),
+          kindTag(j.key),
+          kindOf(j.key) === 'doc' ? el('span', { textContent: sourceOf(j.key, j.url) }) : null,
+          el('span', { className: 'tag', textContent: j.llm || j.model })),
         bar,
         el('div', { className: 'status' }, status));
     }));
@@ -231,7 +304,11 @@
 
   async function pollJobs() {
     let jobs = [];
-    try { jobs = await (await fetch('/api/jobs')).json(); } catch {}
+    try {
+      const r = await fetch('/api/jobs');
+      if (r.status === 401) { location.reload(); return; }
+      jobs = await r.json();
+    } catch {}
     const active = jobs.filter(j => j.stage !== 'error');
     const now = new Set(active.map(j => `${j.model}/${j.key}`));
     // 진행 중이던 작업이 목록에서 빠졌다 = 끝났다 → 문서 목록 새로고침
@@ -244,7 +321,6 @@
   let pollTimer;
   const pollNow = () => { clearTimeout(pollTimer); pollJobs(); };
 
-  // ---------------------------------------------------------- 번역한 문서
   let docs = [];
   let contentHits = new Map();  // "model/key" → {snippet, count}
   let searchSeq = 0;
@@ -254,34 +330,53 @@
     renderDocs();
   }
 
+  let kinds = new Set(['doc', 'image']);
+  try { const s = JSON.parse(localStorage.getItem('pepar-kinds')); if (Array.isArray(s)) kinds = new Set(s.filter(k => k in KIND_LABEL)); } catch {}
+  for (const b of document.querySelectorAll('#kind-filter [data-kind]')) b.addEventListener('click', () => {
+    kinds.has(b.dataset.kind) ? kinds.delete(b.dataset.kind) : kinds.add(b.dataset.kind);
+    try { localStorage.setItem('pepar-kinds', JSON.stringify([...kinds])); } catch {}
+    renderDocs();
+  });
+
   function renderDocs() {
     const q = $('search').value.trim().toLowerCase();
     const terms = q.split(/\s+/).filter(Boolean);
-    const shown = docs.filter(d => {
+    const matched = docs.filter(d => {
       if (!terms.length) return true;
-      const hay = `${d.title} ${d.where} ${d.model} ${d.url} ${d.key}`.toLowerCase();
+      const hay = `${d.title} ${d.where} ${KIND_LABEL[kindOf(d.key)]} ${d.model} ${d.url} ${d.key}`.toLowerCase();
       return terms.every(t => hay.includes(t)) || contentHits.has(`${d.model}/${d.key}`);
     });
-    $('docs-count').textContent = terms.length ? `${shown.length} / ${docs.length}개` : `${docs.length}개`;
+    const counts = { doc: 0, image: 0 };
+    for (const d of matched) counts[kindOf(d.key)]++;
+    for (const b of document.querySelectorAll('#kind-filter [data-kind]')) {
+      b.setAttribute('aria-pressed', String(kinds.has(b.dataset.kind)));
+      b.querySelector('.n').textContent = counts[b.dataset.kind];
+    }
+    const shown = matched.filter(d => kinds.has(kindOf(d.key)));
+    $('docs-count').textContent = terms.length || kinds.size < 2 ? `${shown.length} / ${docs.length}개` : `${docs.length}개`;
     if (!shown.length) {
-      $('docs').replaceChildren(el('li', { className: 'empty', textContent: docs.length ? '검색 결과가 없습니다.' : '아직 번역한 문서가 없습니다.' }));
+      const msg = !docs.length ? '아직 번역한 문서가 없습니다.' : !kinds.size ? '표시할 종류를 하나 이상 켜 주세요.'
+                : terms.length ? '검색 결과가 없습니다.' : '선택한 종류의 번역 결과가 없습니다.';
+      $('docs').replaceChildren(el('li', { className: 'empty', textContent: msg }));
       return;
     }
     $('docs').replaceChildren(...shown.map(d => {
       const hit = contentHits.get(`${d.model}/${d.key}`);
+      const kind = kindOf(d.key);
       const meta = el('div', { className: 'meta' },
-        el('span', { textContent: d.where }),
+        kindTag(d.key),
+        kind === 'doc' ? el('span', { textContent: d.where }) : null,
         el('span', { className: 'tag', textContent: d.model }),
         el('span', { textContent: when(d.translated_at), title: '번역한 시각' }));
-      if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}${d.key.startsWith('i-') ? '개 라벨' : '블록'}` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
-      if (d.failed) meta.append(el('span', { className: 'warn' }, `실패 ${d.failed}블록 · `,
-        el('a', { href: `/view/${encodeURIComponent(d.model)}/${encodeURIComponent(d.key)}?retry_failed=1`, target: '_blank',
-                  textContent: '재번역', title: '실패한 블록만 다시 번역' })));
+      if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}${kind === 'image' ? '개 라벨' : '블록'}` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
+      if (d.failed) meta.append(el('span', { className: 'warn' }, `실패 ${d.failed}${kind === 'image' ? '라벨' : '블록'} · `,
+        el('a', { href: '#', textContent: '재번역', title: '실패한 항목만 다시 번역', onclick: e => { e.preventDefault(); retranslate(d, true); } })));
       const more = el('button', { className: 'more', type: 'button', textContent: '⋯', title: '더 보기' });
       more.setAttribute('aria-haspopup', 'menu');
       more.setAttribute('aria-expanded', 'false');
       more.addEventListener('click', e => { e.stopPropagation(); openMenu(more, d); });
       return el('li', {},
+        kind === 'image' ? el('img', { className: 'thumb', src: `/image/${encodeURIComponent(d.key)}`, loading: 'lazy', alt: '' }) : null,
         el('div', { className: 'body' },
           el('a', { href: docHref(d), target: '_blank' }, highlight(d.title, terms)),
           meta,
@@ -292,7 +387,6 @@
 
   const docHref = (d, q = '') => `/view/${encodeURIComponent(d.model)}/${encodeURIComponent(d.key)}${q}`;
 
-  // ---------------------------------------------------------- ⋯ 메뉴
   let menu = null;
   function closeMenu() {
     if (!menu) return;
@@ -306,8 +400,8 @@
     if (same) return;
     menu = el('div', { className: 'menu', role: 'menu' },
       el('a', { href: docHref(d), target: '_blank', textContent: '열기' }),
-      d.failed ? el('a', { href: docHref(d, '?retry_failed=1'), target: '_blank', textContent: `실패 ${d.failed}블록만 재번역` }) : null,
-      el('a', { href: docHref(d, '?retranslate=1'), target: '_blank', textContent: '처음부터 다시 번역' }),
+      d.failed ? el('button', { type: 'button', textContent: `실패 ${d.failed}${kindOf(d.key) === 'image' ? '라벨' : '블록'}만 다시 번역`, onclick: () => { closeMenu(); retranslate(d, true); } }) : null,
+      el('button', { type: 'button', textContent: '전체 다시 번역', onclick: () => { closeMenu(); retranslate(d, false); } }),
       el('button', { type: 'button', className: 'danger', textContent: '삭제…', onclick: () => { closeMenu(); confirmDelete(d); } }));
     menu.anchor = anchor;
     anchor.setAttribute('aria-expanded', 'true');
@@ -322,7 +416,28 @@
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
   addEventListener('resize', closeMenu);
 
-  // ---------------------------------------------------------- 삭제
+  function retranslate(d, failedOnly) {
+    const dlg = $('retranslate'), pick = $('retranslate-model');
+    const image = kindOf(d.key) === 'image';
+    $('retranslate-title').textContent = failedOnly ? `실패한 ${image ? '라벨' : '블록'}만 다시 번역` : '전체 다시 번역';
+    $('retranslate-text').textContent = `“${d.title}”`;
+    pick.replaceChildren(...[...sel.options].map(o => {
+      const opt = el('option', { value: o.value, textContent: o.textContent });
+      opt.disabled = image && !o.dataset.vision;
+      return opt;
+    }));
+    pick.value = d.model;
+    if (pick.selectedOptions[0]?.disabled) pick.selectedIndex = [...pick.options].findIndex(o => !o.disabled);
+    dlg.returnValue = '';
+    dlg.onclose = () => {
+      if (dlg.returnValue !== 'ok' || !pick.value) return;
+      location.href = failedOnly
+        ? docHref(d, '?retry_failed=1' + (pick.value !== d.model ? `&with=${encodeURIComponent(pick.value)}` : ''))
+        : docHref({ model: pick.value, key: d.key }, '?retranslate=1');
+    };
+    dlg.showModal();
+  }
+
   function confirmDelete(d) {
     const dlg = $('confirm-delete');
     $('confirm-text').textContent = `“${d.title}” (${d.model}) 번역을 삭제합니다. 되돌릴 수 없습니다.`;
@@ -343,7 +458,7 @@
 
   let timer;
   $('search').addEventListener('input', () => {
-    renderDocs();  // 제목·사이트·모델은 바로 거른다
+    renderDocs();
     clearTimeout(timer);
     timer = setTimeout(async () => {  // 본문 검색은 입력이 멈추면 서버에
       const q = $('search').value.trim();
@@ -358,7 +473,7 @@
 
   loadDocs();
   pollJobs();
-  setInterval(renderDocs, 60000);  // "n분 전" 갱신
+  setInterval(renderDocs, 60000);  // "
 })();
 </script>
 </body>

@@ -10,6 +10,7 @@
   .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .4s; }
   #status { color: var(--muted); font-variant-numeric: tabular-nums; }
   .err { color: var(--err); }
+  #cancel { background: none; border: 0; padding: 0; margin-top: 12px; font: inherit; font-size: 14px; color: var(--muted); text-decoration: underline; cursor: pointer; }
   .src { overflow-wrap: anywhere; }
 </style>
 </head>
@@ -25,20 +26,33 @@
     <div id="stage">준비 중…</div>
     <div class="bar"><div id="fill"></div></div>
     <div id="status"></div>
+    <button type="button" id="cancel">취소</button>
   </div>
   <script>
     const api = {{ ('/api/jobs/' ~ model ~ '/' ~ key)|tojson }};
     const $ = s => document.getElementById(s);
     const fmt = s => s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
+    let leaving = false;
+    $('cancel').addEventListener('click', async () => {
+      leaving = true;
+      await fetch(api, { method: 'DELETE' }).catch(() => {});
+      location.href = '/';
+    });
     async function poll() {
+      if (leaving) return;
       let j;
-      try { j = await (await fetch(api)).json(); }
-      catch { setTimeout(poll, 3000); return; }
+      try {
+        const r = await fetch(api);
+        if (r.status === 401) { location.reload(); return; }
+        j = await r.json();
+      } catch { setTimeout(poll, 3000); return; }
+      if (leaving) return;
       if (j.stage === 'done') { location.reload(); return; }
       if (j.stage === 'error') {
+        $('cancel').hidden = true;
         $('stage').innerHTML = '<span class="err"></span>';
         $('stage').firstChild.textContent = '실패: ' + j.message;
-        $('status').innerHTML = '<a href="">다시 시도</a> (이미 번역한 부분은 이어서 진행)';
+        $('status').innerHTML = '<a href="">다시 시도</a>';
         return;
       }
       if (j.stage === 'unknown') { location.reload(); return; }  // 서버 재시작 등으로 작업이 사라짐 → 다시 등록
@@ -49,15 +63,16 @@
       }
       if (j.stage === 'fetching') $('stage').textContent = '원문을 가져오는 중…';
       if (j.stage === 'reading') {
-        $('stage').textContent = '이미지에서 글자를 읽는 중…' + (j.done === 0 ? ' (모델을 불러오는 중일 수 있음)' : '');
+        $('stage').textContent = '이미지에서 글자를 읽는 중…';
         $('fill').style.width = (j.total ? j.done / j.total * 100 : 0) + '%';
         $('status').textContent = j.total > 1 ? `${j.done} / ${j.total} 조각` : '';
       }
       if (j.stage === 'translating') {
-        $('stage').textContent = j.done === 0 ? '번역 중 (모델을 불러오는 중일 수 있음)' : '번역 중';
+        $('stage').textContent = '번역 중';
         $('fill').style.width = (j.total ? j.done / j.total * 100 : 0) + '%';
         $('status').textContent = `${j.done} / ${j.total} 블록` + (j.eta != null ? ` · 남은 시간 약 ${fmt(j.eta)}` : '');
       }
+      if (j.cancelling) { $('stage').textContent = '취소 중…'; $('status').textContent = ''; }
       setTimeout(poll, 2000);
     }
     poll();

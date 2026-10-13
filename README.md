@@ -31,10 +31,10 @@
   - [x] 번역중인 문서 작업 진행도 표시(ETA, 큐 상태)
   - [x] 실패 블록만 재번역, 번역 문서 삭제
   - [x] (개인 운영)systemd 서비스 등록
-  - [ ] OCR 활용한 I2V 기능
+  - [x] OCR 활용한 I2V 기능
   - [ ] 번역할 언어 선택
-  - [ ] llama.cpp 연동과 포트 설정을 담을 config.json
-  - [ ] 보안 수단 검토
+  - [x] llama.cpp 연동과 포트 설정을 담을 config.toml
+  - [x] 보안 수단 검토
 
 - [ ] 배포
 
@@ -47,9 +47,39 @@
 
 ## 실행 방법
 
-​```
-TBD ASAP
-​```
+필요한 것: Python 3.11+, llama.cpp 서버(OpenAI 호환 API). 이미지 번역에는 비전 모델이 필요합니다.
+
+```bash
+pip install -r requirements.txt
+cp config.example.toml config.toml   # llm_url 등 수정
+python app.py                        # http://127.0.0.1:8765
+```
+
+설정은 `config.toml` 또는 환경변수(`PEPAR_HOST`, `PEPAR_PORT`, `PEPAR_LLM_URL`, `PEPAR_CACHE_DIR`, `PEPAR_PASSWORD`, `PEPAR_TRUSTED_PROXIES`, `PEPAR_ALLOW_PRIVATE_URLS`, `PEPAR_KEEP_SCRIPTS`)로 하며, 환경변수가 우선합니다.
+
+### Docker
+
+```bash
+docker compose up -d   # http://127.0.0.1:8765
+```
+
+`.env` 또는 환경변수로 `PEPAR_PORT`, `PEPAR_LLM_URL`, `PEPAR_PASSWORD`, `PEPAR_TRUSTED_PROXIES`를 줄 수 있고, 캐시와 로그인 세션은 `pepar-cache` 볼륨에 남습니다.
+
+기본(bridge)에서는 호스트의 llama.cpp가 `0.0.0.0`에서 열려 있고 방화벽이 docker 네트워크를 허용해야 합니다. 그렇지 않고 llama가 `127.0.0.1`에서만 열려 있다면 호스트 네트워크로 실행하세요.
+
+```bash
+docker compose -f compose.yml -f compose.host.yml up -d
+```
+
+> Cloudflare Tunnel 뒤에서 쓰려면 `trusted_proxies = ["127.0.0.1", "::1"]`을 설정하세요(cloudflared가 같은 호스트일 때. Docker 사이드카면 그 네트워크의 CIDR). 그래야 로그인 시도 제한이 접속자 IP별로 적용됩니다. 설정하지 않으면 모든 접속자가 한 명으로 취급돼, 한 명이 틀리면 전원이 잠깁니다.
+
+> 기본은 인증이 없습니다. `config.toml`의 `password`(또는 `PEPAR_PASSWORD`)를 정하면 비밀번호 로그인이 걸립니다(5번 틀리면 해당 IP는 15분간 잠김). 암호화되지 않으니 인터넷에 열 때는 HTTPS 프록시 뒤에 두세요.
+
+---
+
+## 라이선스
+
+[MIT](LICENSE)
 
 ---
 

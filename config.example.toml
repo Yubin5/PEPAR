@@ -1,0 +1,21 @@
+# addresses to listen on (no authentication unless password is set: keep it off the public internet)
+host = ["127.0.0.1"]
+port = 8765
+
+# llama.cpp server
+llm_url = "http://127.0.0.1:9090/v1/chat/completions"
+
+cache_dir = "cache"
+
+# login password. Empty = no authentication. 5 wrong tries lock an IP for 15 minutes.
+password = ""
+
+# proxies whose CF-Connecting-IP header is trusted (Cloudflare Tunnel on this host: ["127.0.0.1", "::1"]).
+# Leave empty when not behind such a proxy, otherwise clients could fake their IP.
+trusted_proxies = []
+
+# allow translating localhost / LAN / Tailscale addresses (off blocks them)
+allow_private_urls = false
+
+# keep a web page's own scripts (off removes them; scripts run on this server's origin)
+keep_scripts = false

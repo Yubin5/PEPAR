@@ -1,9 +1,13 @@
 #!/bin/bash
-# pepar 재시작 (systemd 사용자 서비스). 번역 중이거나 대기 중인 작업이 있으면 거부한다 (-f로 강제).
-# 로그: journalctl --user -u pepar -f
+# 작업이 진행 중이면 재시작을 거부한다 (-f로 강제).
+cd "$(dirname "$0")"
 PORT=${PEPAR_PORT:-8765}
+PASSWORD=$(.venv/bin/python -c "import config; print(config.settings['password'])")
+JAR=$(mktemp)
+trap 'rm -f "$JAR"' EXIT
+[ -n "$PASSWORD" ] && curl -s -m 5 -c "$JAR" --data-urlencode "password=$PASSWORD" "http://127.0.0.1:$PORT/login" -o /dev/null
 if [ "$1" != "-f" ]; then
-  jobs=$(curl -s -m 5 "http://127.0.0.1:$PORT/api/jobs" | python3 -c "
+  jobs=$(curl -s -m 5 -b "$JAR" "http://127.0.0.1:$PORT/api/jobs" | python3 -c "
 import json, sys
 try: print(sum(1 for j in json.load(sys.stdin) if j['stage'] != 'error'))
 except Exception: print(0)")

@@ -3,7 +3,6 @@
 import copy
 import hashlib
 import json
-import os
 import re
 import sys
 import time
@@ -14,15 +13,18 @@ from urllib.parse import urldefrag, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-LLM_URL = os.environ.get("PEPAR_LLM_URL", "http://127.0.0.1:9090/v1/chat/completions")
-LLM_MODEL = os.environ.get("PEPAR_MODEL", "gemma4-12b")
-BATCH_CHARS = int(os.environ.get("PEPAR_BATCH_CHARS", "2500"))
+import netguard
+from config import settings
+from errors import LLMUnavailable, PeparError
+
+LLM_URL = settings["llm_url"]
+BATCH_CHARS = 2500
 BATCH_ITEMS = 12
 MAX_BLOCKS = 3000
 
 ARXIV_ID = re.compile(r"(\d{4}\.\d{4,5})(v\d+)?")
 BARE_ARXIV_ID = re.compile(r"^(?:arxiv:)?(\d{4}\.\d{4,5}(?:v\d+)?)$", re.I)
-# LLM에 보내는 자리표시 태그 (모델이 HTML에 익숙해서 괄호 기호보다 잘 지킨다)
+# LLM에 보내는 자리표시 태그
 #   <x3/>        통째로 보존한 요소 (수식, 인용, 코드, 이미지 등)
 #   <t3>…</t3>   링크·강조. 모델이 번역문의 알맞은 낱말을 감싸도록 한다
 # 그룹: 1=닫는 태그면 "/", 2=종류(t|x), 3=번호
@@ -36,15 +38,6 @@ UA_BROWSER = {
 }
 
 
-class PeparError(Exception):
-    pass
-
-
-class LLMUnavailable(PeparError):
-    pass
-
-
-# ---------------------------------------------------------------- 입력 판별
 
 
 @dataclass
@@ -76,7 +69,6 @@ def parse_source(text: str) -> Source:
     return Source("web", "w-" + hashlib.sha1(url.encode()).hexdigest()[:12], url)
 
 
-# ---------------------------------------------------------------- 문서 불러오기
 
 
 @dataclass
@@ -101,6 +93,21 @@ SKIP_ROLES = ["navigation", "contentinfo", "search", "banner"]
 WEB_SKIP = ["nav", "footer", "aside", "form", "pre", "code", "button", "template", "svg", "math", "select", "textarea"]
 
 
+def describe_request_error(e: Exception) -> str:
+    print(f"[pepar] 요청 실패: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+    if isinstance(e, requests.exceptions.Timeout):
+        return "응답 시간이 초과되었습니다."
+    if isinstance(e, requests.exceptions.SSLError):
+        return "보안 연결(SSL)에 실패했습니다."
+    if isinstance(e, requests.exceptions.TooManyRedirects):
+        return "리다이렉트가 너무 많습니다."
+    if isinstance(e, (requests.exceptions.InvalidURL, requests.exceptions.InvalidSchema, requests.exceptions.MissingSchema)):
+        return "주소 형식이 올바르지 않습니다."
+    if isinstance(e, requests.exceptions.ConnectionError):
+        return "서버에 연결할 수 없습니다. 주소가 맞는지, 사이트가 열려 있는지 확인해 주세요."
+    return "요청에 실패했습니다."
+
+
 def _outermost(nodes):
     chosen = set()
     for n in nodes:
@@ -114,10 +121,14 @@ def _text(el) -> str:
 
 
 def load_arxiv(src: Source) -> Doc:
-    r = requests.get(f"https://arxiv.org/html/{src.url}", headers=UA_PEPAR, timeout=60)
+    try:
+        r = requests.get(f"https://arxiv.org/html/{src.url}", headers=UA_PEPAR, timeout=60)
+    except requests.RequestException as e:
+        raise PeparError(f"arXiv에서 논문을 가져오지 못했습니다: {describe_request_error(e)}") from e
     if r.status_code == 404:
-        raise PeparError("이 논문은 arXiv HTML 버전이 없습니다 (LaTeX → HTML 변환 실패 논문).")
-    r.raise_for_status()
+        raise PeparError("이 논문은 arXiv HTML 버전이 없습니다 (LaTeX → HTML 변환 실패 논문). 논문 ID가 맞는지도 확인해 주세요.")
+    if r.status_code >= 400:
+        raise PeparError(f"arXiv에서 논문을 가져오지 못했습니다 (HTTP {r.status_code}).")
     soup = BeautifulSoup(r.content, "lxml")
     if not soup.select_one("article.ltx_document"):
         raise PeparError("arXiv HTML 논문 본문을 찾지 못했습니다.")
@@ -144,11 +155,11 @@ def load_arxiv(src: Source) -> Doc:
     return doc
 
 
-def load_web(src: Source, keep_scripts: bool = True) -> Doc:
+def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"]) -> Doc:
     try:
-        r = requests.get(src.url, headers=UA_BROWSER, timeout=60)
+        r = netguard.fetch(src.url, UA_BROWSER, settings["allow_private_urls"])
     except requests.RequestException as e:
-        raise PeparError(f"페이지를 가져오지 못했습니다: {e}") from e
+        raise PeparError(f"페이지를 가져오지 못했습니다: {describe_request_error(e)}") from e
     if r.status_code in (401, 403, 429, 503) and (r.headers.get("cf-mitigated") or "cloudflare" in r.headers.get("server", "").lower()):
         raise PeparError(f"사이트의 봇 차단(Cloudflare)에 막혀 페이지를 가져올 수 없습니다 (HTTP {r.status_code}).")
     if r.status_code in (401, 403):
@@ -190,7 +201,7 @@ def load_web(src: Source, keep_scripts: bool = True) -> Doc:
     doc = Doc(soup, base, src.key, "web", title, "\n".join(parts), keep_scripts=keep_scripts)
     blocks = root.select(WEB_BLOCKS)
     block_ids = {id(b) for b in blocks}
-    # 가장 안쪽 블록만 번역 단위로 쓴다 (블록 안에 블록이 있으면 안쪽 것을 택함)
+    # 가장 안쪽 블록만 번역 단위로 쓴다
     has_inner = {id(p) for b in blocks for p in b.parents if id(p) in block_ids}
     for el in blocks:
         if id(el) in has_inner:
@@ -214,12 +225,7 @@ SEG_CLASS = "pepar-seg"
 
 
 def _split_at_br(soup, el):
-    """<br>로 줄을 나눈 블록은 줄 구간마다 따로 번역한다.
-
-    <br>을 토큰으로 바꿔 통째로 보내면, 모델이 줄 경계에서 응답을 여러 항목으로 쪼개
-    토큰 검사에 계속 실패한다 (예: 문단을 <br><br>로만 구분한 긴 상품 설명).
-    직계 자식 <br> 사이의 구간을 <span class="pepar-seg">로 감싸 각각 번역 단위로 쓴다.
-    """
+    """<br>로 나뉜 블록은 줄 구간마다 따로 번역한다 (통째로 보내면 모델이 줄 경계에서 응답을 쪼개 토큰 검사에 실패한다)."""
     if not el.find("br", recursive=False):
         return [el]
     runs, cur = [], []
@@ -242,18 +248,14 @@ def _split_at_br(soup, el):
     return units
 
 
-def load(src: Source, keep_scripts: bool = True) -> Doc:
+def load(src: Source, keep_scripts: bool = settings["keep_scripts"]) -> Doc:
     return load_arxiv(src) if src.kind == "arxiv" else load_web(src, keep_scripts)
 
 
-# ---------------------------------------------------------------- 추출
 
 
 def protect(el, atomic: str, pairs: str | None) -> tuple[str, list[str], dict[int, str]]:
-    """보존할 요소를 <xN/>로, 링크·강조는 <tN>…</tN>로 치환한다. el을 변경한다.
-
-    반환: (LLM에 보낼 텍스트, 원본 조각/여는 태그 목록, {n: 닫는 태그})
-    """
+    """보존할 요소를 <xN/>로, 링크·강조를 <tN>…</tN>로 치환한다. 반환: (LLM에 보낼 텍스트, 원본 조각/여는 태그 목록, {n: 닫는 태그})."""
     saved: list[str] = []
     closers: dict[int, str] = {}
     for node in list(_outermost(el.select(atomic))):
@@ -299,7 +301,6 @@ def batches(items):
         yield cur
 
 
-# ---------------------------------------------------------------- LLM
 
 SYSTEM = """You are a professional translator into Korean.
 
@@ -325,7 +326,6 @@ STYLE = {
 
 
 def list_models() -> list[dict]:
-    """라우터에 등록된 모델 목록: [{id, loaded, vision}]."""
     url = LLM_URL.rsplit("/chat/completions", 1)[0] + "/models"
     r = requests.get(url, timeout=5)
     r.raise_for_status()
@@ -341,9 +341,16 @@ def list_models() -> list[dict]:
     return out
 
 
+def pick_default_model(models: list[dict]) -> str:
+    for m in models:
+        if m["loaded"]:
+            return m["id"]
+    return models[0]["id"] if models else ""
+
+
 def _post(body: dict, attempts: int = 8, wait: int = 20) -> dict:
-    """LLM 서버가 죽었거나 모델을 다시 올리는 중이면 잠시 기다렸다 재시도하고, 끝내 안 되면 작업을 중단한다."""
-    last = ""
+    """서버 장애·모델 재로딩 중이면 기다렸다 재시도하고, 끝내 안 되면 중단한다."""
+    last = detail = ""
     for n in range(attempts):
         try:
             r = requests.post(LLM_URL, json=body, timeout=900)
@@ -351,14 +358,18 @@ def _post(body: dict, attempts: int = 8, wait: int = 20) -> dict:
                 r.raise_for_status()
                 return r.json()
             last = f"HTTP {r.status_code}: {r.text[:200]}"
+            detail = f"HTTP {r.status_code}"
         except (requests.ConnectionError, requests.Timeout) as e:
             last = f"{type(e).__name__}: {e}"
+            detail = "응답 시간 초과" if isinstance(e, requests.Timeout) else "연결 실패"
         print(f"[pepar] LLM 서버 응답 없음 ({n + 1}/{attempts}), {wait}초 후 재시도: {last}", file=sys.stderr, flush=True)
         time.sleep(wait)
-    raise LLMUnavailable(f"LLM 서버({LLM_URL})에 연결할 수 없습니다: {last}")
+    raise LLMUnavailable(
+        f"LLM 서버({LLM_URL})가 응답하지 않습니다 ({detail}). 서버가 실행 중인지 확인한 뒤 다시 시도해 주세요. 이미 번역한 부분은 이어서 진행됩니다."
+    )
 
 
-# 응답을 이 스키마로 강제한다 (llama-server가 문법 수준에서 막아서, 따옴표 때문에 JSON이 깨지지 않는다)
+# 응답을 스키마로 강제한다 (llama-server가 문법 수준에서 막아 JSON이 깨지지 않는다)
 RESPONSE_SCHEMA = {
     "type": "array",
     "items": {
@@ -408,7 +419,7 @@ def _one(model: str, system: str, text: str, temperature: float) -> str | None:
 
 
 def translate_batch(model: str, system: str, items: list[dict], idxs: list[int]) -> dict[int, str]:
-    """{item index: 번역문}. 실패한 항목은 빠진다."""
+    """{항목 index: 번역문}. 실패한 항목은 빠진다."""
     out = {}
     try:
         result = _call(model, system, [{"id": k, "text": items[i]["text"]} for k, i in enumerate(idxs)])
@@ -444,7 +455,6 @@ def translate_batch(model: str, system: str, items: list[dict], idxs: list[int])
     return out
 
 
-# ---------------------------------------------------------------- 결과 HTML
 
 PEPAR_HEAD = """
 <style>
@@ -547,7 +557,7 @@ def _absolutize(soup, base: str):
 
 
 def _restore(translated: str, it: dict) -> str:
-    """번역문의 자리표시 태그를 원래 요소·태그로 바꾸고, 나머지 글자는 이스케이프한 HTML."""
+    """자리표시 태그를 원래 요소로 복원하고 나머지는 이스케이프한다."""
     out, pos = [], 0
     for m in TOKEN.finditer(translated):
         out.append(html_escape(translated[pos : m.start()]))
@@ -562,7 +572,7 @@ def _restore(translated: str, it: dict) -> str:
 
 
 def _migrate_checkpoint(saved: dict) -> dict:
-    """⟦n⟧ 형식으로 저장된 예전 체크포인트를 태그 형식으로 바꾼다. 쌍 여부는 원문(키)에서 판단."""
+    """예전 ⟦n⟧ 체크포인트를 태그 형식으로 바꾼다."""
     def conv(s: str, pairs: set) -> str:
         return OLD_TOKEN.sub(lambda m: f"</t{m.group(2)}>" if m.group(1) else (f"<t{m.group(2)}>" if m.group(2) in pairs else f"<x{m.group(2)}/>"), s)
     out = {}
@@ -625,7 +635,6 @@ def build(doc: Doc, translations: dict[int, str], model: str, home: str, retry_u
     return str(soup)
 
 
-# ---------------------------------------------------------------- 전체 파이프라인
 
 
 def run(
@@ -634,15 +643,11 @@ def run(
     on_progress=lambda stage, done, total, **info: None,
     home: str = "/",
     checkpoint=None,
-    keep_scripts: bool = True,
+    keep_scripts: bool = settings["keep_scripts"],
     retry_url: str | None = None,
+    label: str | None = None,
 ):
-    """(확정된 key, 제목, 번역된 HTML, 번역 실패 블록 수)를 반환.
-
-    on_progress(stage, done, total, **info): 진행 상황 콜백. 원문을 불러온 뒤 한 번 title=문서 제목을 함께 넘긴다.
-    checkpoint: 묶음마다 {원문: 번역문}을 저장할 JSON 경로. 작업이 중간에 끊겨도
-    다음 실행에서 이미 번역한 블록은 건너뛴다.
-    """
+    """(key, 제목, 번역 HTML, 실패 블록 수). checkpoint에는 묶음마다 {원문: 번역문}을 저장해 끊겨도 이어서 번역한다. label은 결과 페이지에 표시할 모델 이름."""
     on_progress("fetching", 0, 0)
     doc = load(src, keep_scripts)
     items = doc.items
@@ -669,4 +674,4 @@ def run(
             checkpoint.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
         done += len(real)
         on_progress("translating", done, total)
-    return doc.key, doc.title, build(doc, translations, model, home, retry_url), total - len(translations)
+    return doc.key, doc.title, build(doc, translations, label or model, home, retry_url), total - len(translations)
