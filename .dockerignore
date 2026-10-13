@@ -1,0 +1,7 @@
+.git
+.venv
+__pycache__
+cache
+*.log
+config.toml
+tests

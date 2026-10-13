@@ -1,0 +1,11 @@
+# Use when the LLM server only listens on the host's 127.0.0.1:
+#   docker compose -f compose.yml -f compose.host.yml up -d
+services:
+  pepar:
+    network_mode: host
+    ports: !reset []
+    extra_hosts: !reset []
+    environment:
+      PEPAR_HOST: 127.0.0.1
+      PEPAR_PORT: ${PEPAR_PORT:-8765}
+      PEPAR_LLM_URL: ${PEPAR_LLM_URL:-http://127.0.0.1:9090/v1/chat/completions}

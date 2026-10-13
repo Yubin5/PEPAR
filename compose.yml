@@ -1,0 +1,14 @@
+services:
+  pepar:
+    build: .
+    init: true
+    ports: ["127.0.0.1:${PEPAR_PORT:-8765}:8765"]
+    environment:
+      PEPAR_LLM_URL: ${PEPAR_LLM_URL:-http://host.docker.internal:9090/v1/chat/completions}
+      PEPAR_PASSWORD: ${PEPAR_PASSWORD:-}
+      PEPAR_TRUSTED_PROXIES: ${PEPAR_TRUSTED_PROXIES:-}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes: [pepar-cache:/app/cache]
+    restart: unless-stopped
+volumes:
+  pepar-cache:
