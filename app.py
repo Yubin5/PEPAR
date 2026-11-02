@@ -30,9 +30,11 @@ CACHE.mkdir(parents=True, exist_ok=True)
 SOURCES = CACHE / "sources.json"  # web key는 해시라 URL을 따로 기록
 IMAGES = CACHE / "images"
 IMAGES.mkdir(exist_ok=True)
+CUSTOM_LANGS = CACHE / "langs.json"  # 직접 입력한 언어: 코드 → 입력한 글
 KEY_RE = re.compile(r"^(\d{4}\.\d{4,5}(v\d+)?|[wi]-[0-9a-f]{12})$")
 # URL·캐시 폴더에 쓰는 "모델 칸": 한국어는 모델 이름 그대로(예전 결과와 같은 자리), 다른 언어는 "모델@언어"
-MODEL_RE = re.compile(r"^[\w.\-]+(@[a-z]{2})?$")
+# 직접 입력한 언어는 "모델@x-<해시>" (이름은 cache/langs.json)
+MODEL_RE = re.compile(r"^[\w.\-]+(@([a-z]{2}|x-[0-9a-f]{8}))?$")
 ACTIVE = ("queued", "fetching", "reading", "translating")
 
 
@@ -105,7 +107,7 @@ def image_name(key: str) -> str:
 def split_slot(slot: str) -> tuple[str, str]:
     """모델 칸 → (모델, 언어)."""
     model, _, lang = slot.partition("@")
-    return model, lang if lang in translator.LANGS else translator.DEFAULT_LANG
+    return model, lang if lang in translator.LANGS or translator.CUSTOM_RE.match(lang) else translator.DEFAULT_LANG
 
 
 def slot_for(model: str, lang: str) -> str:
@@ -115,10 +117,35 @@ def slot_for(model: str, lang: str) -> str:
 def slot_label(slot: str) -> str:
     """화면에 보일 이름: gemma4-12b · English."""
     model, lang = split_slot(slot)
-    return model if lang == translator.DEFAULT_LANG else f"{model} · {translator.LANGS[lang][0]}"
+    return model if lang == translator.DEFAULT_LANG else f"{model} · {translator.lang_name(lang)}"
 
 
-def pick_lang(requested: str | None) -> str:
+def load_custom_langs():
+    try:
+        data = json.loads(CUSTOM_LANGS.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return
+    translator.CUSTOM_LANGS.update({k: v for k, v in data.items() if translator.CUSTOM_RE.match(k) and isinstance(v, str)})
+
+
+def remember_custom_lang(text: str) -> str:
+    """직접 입력한 언어를 기록하고 코드를 돌려준다. 같은 표현이면 같은 코드 (처음 입력한 글자 그대로 보인다)."""
+    text = translator.clean_custom(text)
+    code = translator.custom_code(text)
+    with sources_lock:
+        if code not in translator.CUSTOM_LANGS:
+            translator.CUSTOM_LANGS[code] = text
+            CUSTOM_LANGS.write_text(json.dumps(translator.CUSTOM_LANGS, ensure_ascii=False, indent=1), encoding="utf-8")
+    return code
+
+
+load_custom_langs()
+
+
+def pick_lang(requested: str | None, text: str | None = None) -> str:
+    """lang=other면 text(직접 입력한 언어)를 기록하고 그 코드를. PeparError는 입력이 비었을 때."""
+    if requested == "other":
+        return remember_custom_lang(text or "")
     if requested and requested not in translator.LANGS:
         abort(400)
     return requested or translator.DEFAULT_LANG
@@ -162,7 +189,8 @@ def doc_info(p: Path, sources: dict) -> dict:
         "model": model,
         "llm": llm,
         "lang": lang,
-        "lang_name": translator.LANGS[lang][0],
+        "lang_name": translator.lang_name(lang),
+        "custom_lang": lang not in translator.LANGS,
         "key": key,
         "title": title,
         "url": url,
@@ -213,6 +241,8 @@ def worker():
                 job["resumed"] = done  # 체크포인트에서 이어받은 블록 수
 
         try:
+            if not translator.is_lang(lang):
+                raise translator.PeparError("직접 입력한 언어 기록(langs.json)을 찾을 수 없습니다. 첫 화면에서 언어를 다시 입력해 주세요.")
             src = source_for(key)
             if src is None:
                 raise translator.PeparError("원본 URL 기록을 찾을 수 없습니다. 첫 화면에서 다시 입력해 주세요.")
@@ -327,7 +357,8 @@ def start_job(model: str, key: str, llm: str | None = None):
         base, lang = split_slot(model)
         job["llm"] = llm or base  # 실제로 번역할 모델 (실패분 재번역은 다른 모델일 수 있다)
         job["lang"] = lang
-        job["lang_name"] = translator.LANGS[lang][0]
+        job["lang_name"] = translator.lang_name(lang)
+        job["custom_lang"] = lang not in translator.LANGS
         work.put(job)
 
 
@@ -558,7 +589,7 @@ def open_link():
         model = pick_model(request.args.get("model"))
         if not MODEL_RE.match(model) or "@" in model:
             abort(400)
-        lang = pick_lang(request.args.get("lang"))
+        lang = pick_lang(request.args.get("lang"), request.args.get("lang_text"))
         src = translator.parse_source(request.args.get("url", ""))
     except translator.PeparError as e:
         return render_template("progress.html", error=str(e), model="", key="", src_url=""), 400
@@ -579,7 +610,10 @@ def upload():
         return fail(str(e))
     if not MODEL_RE.match(model) or "@" in model:
         abort(400)
-    lang = pick_lang(request.form.get("lang"))
+    try:
+        lang = pick_lang(request.form.get("lang"), request.form.get("lang_text"))
+    except translator.PeparError as e:
+        return fail(str(e))
     f = request.files.get("image")
 
     if not f or not f.filename:

@@ -67,6 +67,9 @@
   .top .sub { margin: 0; }
   .model select { max-width: 100%; }
   .pickers { display: flex; gap: 8px 16px; flex-wrap: wrap; align-items: center; }
+  .pickers input.lang-text { flex: none; width: 15em; padding: 8px 10px; }
+  .lang-warn { color: var(--err); font-weight: 600; font-size: 14px; margin: -12px 0 16px; }
+  .tag.custom-lang { color: var(--err); border-color: color-mix(in srgb, var(--err) 60%, transparent); }
   .logout { font-size: 13px; color: var(--muted); }
 
   .tabs, .chips { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -97,8 +100,11 @@
           {% for code, names in langs.items() %}
           <option value="{{ code }}" {% if code == default_lang %}selected{% endif %}>{{ names[0] }}</option>
           {% endfor %}
+          <option value="other">기타 (직접 입력)</option>
         </select>
       </label>
+      <input class="lang-text" name="lang_text" id="lang-text" form="form" maxlength="40" hidden
+        placeholder="예: 베트남어, Thai, 경상도 사투리" aria-label="번역할 언어 직접 입력">
       <label class="model">모델
         <select name="model" id="model" form="form">
           {% for m in models %}
@@ -109,6 +115,7 @@
       {% if auth %}<a class="logout" href="/logout">로그아웃</a>{% endif %}
     </div>
   </header>
+  <p class="lang-warn" id="lang-warn" role="note" hidden>⚠ 직접 입력한 언어는 지원이 불안정합니다. 모델이 언어를 잘못 알아듣거나, 번역이 섞이거나, 번역에 실패할 수 있습니다.</p>
   {% if models_error %}<p class="hint warn" style="margin:-12px 0 16px">{{ models_error }}</p>{% endif %}
 
   <div class="card">
@@ -186,10 +193,24 @@
     if (last && [...langSel.options].some(o => o.value === last)) langSel.value = last;
   } catch {}
   langSel.addEventListener('change', () => { try { localStorage.setItem('pepar-lang', langSel.value); } catch {} });
+  // 기타 (직접 입력): 입력칸과 빨간 경고를 보인다. 입력한 글도 기억
+  const langText = document.getElementById('lang-text');
+  try { langText.value = localStorage.getItem('pepar-lang-text') || ''; } catch {}
+  langText.addEventListener('input', () => { try { localStorage.setItem('pepar-lang-text', langText.value); } catch {} });
+  const showCustom = () => {
+    const custom = langSel.value === 'other';
+    langText.hidden = !custom;
+    langText.disabled = !custom;  // 다른 언어를 고르면 보내지 않는다
+    document.getElementById('lang-warn').hidden = !custom;
+  };
+  langSel.addEventListener('change', () => { showCustom(); if (langSel.value === 'other') langText.focus(); });
+  showCustom();
   const DEFAULT_LANG = {{ default_lang|tojson }};
   // 모델 칸: 한국어는 모델 이름 그대로, 다른 언어는 "모델@언어" (서버의 slot_for와 같다)
   const slotOf = (model, lang) => lang === DEFAULT_LANG ? model : `${model}@${lang}`;
-  const langTag = (lang, name) => lang && lang !== DEFAULT_LANG ? el('span', { className: 'tag', textContent: name }) : null;
+  const langTag = (lang, name, custom) => lang && lang !== DEFAULT_LANG
+    ? el('span', { className: custom ? 'tag custom-lang' : 'tag', textContent: name, title: custom ? '직접 입력한 언어 (지원 불안정)' : '' })
+    : null;
 
   const $ = id => document.getElementById(id);
 
@@ -235,7 +256,15 @@
     else if (/-e[24]b$/.test(sel.value) && !confirm(`${sel.value}은(는) 작은 모델이라 글자 위치와 내용이 부정확합니다. gemma4-12b를 권장합니다.\n그래도 ${sel.value}로 번역할까요?`)) e.preventDefault();
   });
   // 주소로 번역할 때는 파일을 같이 보내지 않는다
-  $('form').addEventListener('submit', e => { if (e.submitter?.id !== 'image-submit') fileInput.disabled = true; setTimeout(() => { fileInput.disabled = false; }); });
+  $('form').addEventListener('submit', e => {
+    if (langSel.value === 'other' && !langText.value.trim()) {  // 직접 입력을 골랐는데 비어 있으면 보내지 않는다
+      e.preventDefault();
+      langText.focus();
+      return;
+    }
+    if (e.submitter?.id !== 'image-submit') fileInput.disabled = true;
+    setTimeout(() => { fileInput.disabled = false; });
+  });
   const el = (tag, props = {}, ...kids) => {
     const e = document.createElement(tag);
     Object.assign(e, props);
@@ -318,7 +347,7 @@
           kindTag(j.key),
           kindOf(j.key) === 'doc' ? el('span', { textContent: sourceOf(j.key, j.url) }) : null,
           el('span', { className: 'tag', textContent: j.llm || j.model }),
-          langTag(j.lang, j.lang_name)),
+          langTag(j.lang, j.lang_name, j.custom_lang)),
         bar,
         el('div', { className: 'status' }, status));
     }));
@@ -389,7 +418,7 @@
         kindTag(d.key),
         kind === 'doc' ? el('span', { textContent: d.where }) : null,
         el('span', { className: 'tag', textContent: d.llm }),
-        langTag(d.lang, d.lang_name),
+        langTag(d.lang, d.lang_name, d.custom_lang),
         el('span', { textContent: when(d.translated_at), title: '번역한 시각' }));
       if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}${kind === 'image' ? '개 라벨' : '블록'}` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
       if (d.failed) meta.append(el('span', { className: 'warn' }, `실패 ${d.failed}${kind === 'image' ? '라벨' : '블록'} · `,

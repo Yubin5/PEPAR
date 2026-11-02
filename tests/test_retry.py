@@ -72,6 +72,34 @@ class RetryFailedTest(unittest.TestCase):
         self.assertEqual(self.client.get(f"/open?model=a@en&url={KEY}").status_code, 400)
         self.assertEqual(self.client.get(f"/view/a@en/{KEY}?retry_failed=1&with=b@ja").status_code, 400)
 
+    def test_custom_language(self):
+        import translator
+        r = self.client.get(f"/open?model=a&lang=other&lang_text=%20Vietnamese%0A&url={KEY}")
+        code = translator.custom_code("vietnamese")
+        self.assertEqual(r.headers["Location"], f"/view/a@{code}/{KEY}")
+        self.assertEqual(translator.lang_name(code), "Vietnamese")
+        self.assertEqual(json.loads((pepar.CACHE / "langs.json").read_text())[code], "Vietnamese")
+        # 같은 표현은 같은 칸
+        r2 = self.client.get(f"/open?model=a&lang=other&lang_text=VIETNAMESE&url={KEY}")
+        self.assertEqual(r2.headers["Location"], f"/view/a@{code}/{KEY}")
+        for p in pepar.model_dir(f"a@{code}").glob("*"):
+            p.unlink()
+        self.client.get(f"/view/a@{code}/{KEY}")
+        self.wait()
+        self.assertEqual(self.langs, [code])
+        self.assertEqual(self.calls[0]["label"], "a · Vietnamese")
+        self.assertIn('"Vietnamese"', translator.system_prompt("c", "web", code))
+
+    def test_custom_language_must_not_be_empty(self):
+        r = self.client.get(f"/open?model=a&lang=other&lang_text=%20%20&url={KEY}")
+        self.assertEqual(r.status_code, 400)
+
+    def test_unknown_custom_code_fails_the_job(self):
+        self.client.get(f"/view/a@x-00000000/{KEY}")
+        self.wait()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(pepar.jobs[f"a@x-00000000/{KEY}"]["stage"], "error")
+
     def test_bad_model_rejected(self):
         self.assertEqual(self.client.get(f"/view/a/{KEY}?retry_failed=1&with=../x").status_code, 400)
         self.assertEqual(self.calls, [])

@@ -288,6 +288,36 @@ LANGS = {
 }
 DEFAULT_LANG = "ko"
 
+# 사용자가 직접 입력한 언어: 코드 "x-<해시 8자리>" → 입력한 글. app이 파일에서 읽어 채운다
+CUSTOM_LANGS: dict[str, str] = {}
+CUSTOM_RE = re.compile(r"^x-[0-9a-f]{8}$")
+CUSTOM_MAX = 40
+
+
+def custom_code(text: str) -> str:
+    """같은 표현이면 대소문자·띄어쓰기가 달라도 같은 코드."""
+    norm = " ".join(text.lower().split())
+    return "x-" + hashlib.sha256(norm.encode()).hexdigest()[:8]
+
+
+def clean_custom(text: str) -> str:
+    """직접 입력한 언어 이름. 제어 문자와 줄바꿈을 없애고 길이를 자른다. 비면 PeparError."""
+    text = " ".join("".join(c for c in text if c.isprintable()).split())[:CUSTOM_MAX]
+    if not text:
+        raise PeparError("번역할 언어를 입력해 주세요.")
+    return text
+
+
+def is_lang(code: str) -> bool:
+    return code in LANGS or code in CUSTOM_LANGS
+
+
+def lang_name(code: str) -> str:
+    """화면에 보일 이름."""
+    if code in LANGS:
+        return LANGS[code][0]
+    return CUSTOM_LANGS.get(code, code)
+
 # 번역할 가치가 있는지: 토큰을 뺀 텍스트에 번역할 언어의 문자가 아닌 글자가 2자 이상.
 # 라틴 문자 언어끼리는 문자로 구별할 수 없어서 글자가 있으면 모두 보낸다 (이미 그 언어면 모델이 그대로 돌려준다)
 # 일본어는 가나만 자기 문자로 본다. 한자만 있는 글은 중국어일 수도 있어서 보낸다 (가나가 섞여 있으면 일본어로 본다)
@@ -296,12 +326,13 @@ HANZI = "\u3400-\u9fff"
 _OWN_SCRIPT = {"ko": "가-힣ㄱ-ㅎㅏ-ㅣ", "ja": KANA, "zh": HANZI}
 # 글자 수는 이어져 있지 않아도 센다 ("1달 전"처럼 한 음절씩 띄어 쓴 한국어도 번역하도록)
 _WORTH = {lang: re.compile(rf"[^\W\d_{_OWN_SCRIPT.get(lang, '')}]") for lang in LANGS}
+_WORTH_ANY = re.compile(r"[^\W\d_]")  # 직접 입력한 언어: 어떤 문자가 그 언어인지 모르니 글자가 있으면 보낸다
 _WORTH_JA_TEXT = re.compile(rf"[^\W\d_{KANA}{HANZI}]")  # 가나가 있는 글: 한자도 일본어
 _HAS_KANA = re.compile(rf"[{KANA}]")
 
 
 def worth(text: str, lang: str = "ko") -> bool:
-    pat = _WORTH_JA_TEXT if lang == "ja" and _HAS_KANA.search(text) else _WORTH[lang]
+    pat = _WORTH_JA_TEXT if lang == "ja" and _HAS_KANA.search(text) else _WORTH.get(lang, _WORTH_ANY)
     return len(pat.findall(text)) >= 2
 
 
@@ -375,7 +406,15 @@ def system_prompt(context: str, kind: str, lang: str = "ko") -> str:
         style = IMAGE_STYLE.format(examples=f" (e.g. {ex})" if ex else "")
     else:
         style = STYLE.get(lang, {}).get(kind) or STYLE["*"][kind]
-    return SYSTEM.format(lang=LANGS[lang][1], context=context, style=style)
+    if lang in LANGS:
+        return SYSTEM.format(lang=LANGS[lang][1], context=context, style=style)
+    # 직접 입력한 언어: 입력한 글을 그대로 언어 이름 자리에 두고, 어떻게 해석할지 알려 준다
+    target = CUSTOM_LANGS[lang]
+    style = (
+        f'The target language was typed by the user as free text: "{target}". Interpret it as a language, dialect, '
+        f"script or register and write every translation in it. {style}"
+    )
+    return SYSTEM.format(lang=f'"{target}"', context=context, style=style)
 
 
 def list_models() -> list[dict]:
