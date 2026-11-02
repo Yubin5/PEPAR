@@ -125,7 +125,8 @@
   <div class="card">
     <div class="tabs" role="tablist" aria-label="번역할 대상">
       <button type="button" role="tab" id="tab-url" data-tab="url" aria-selected="true">문서</button>
-      <button type="button" role="tab" id="tab-image" data-tab="image" aria-selected="false">이미지·PDF</button>
+      <button type="button" role="tab" id="tab-pdf" data-tab="pdf" aria-selected="false">PDF</button>
+      <button type="button" role="tab" id="tab-image" data-tab="image" aria-selected="false">이미지</button>
       <button type="button" role="tab" id="tab-text" data-tab="text" aria-selected="false">텍스트</button>
     </div>
     <form action="/open" method="get" id="form">
@@ -135,14 +136,27 @@
           <button type="submit">번역</button>
         </div>
       </div>
+      <div id="panel-pdf" hidden>
+        <div class="row">
+          <label class="file" id="drop-pdf"><input type="file" name="pdf" id="pdf" accept="application/pdf,.pdf">
+            <span id="pdf-label">PDF 선택 · 끌어놓기</span></label>
+          <button type="submit" id="pdf-submit" formaction="/upload" formmethod="post"
+            formenctype="multipart/form-data" formnovalidate>PDF 번역</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <input name="pdf_url" id="pdf-url" placeholder="또는 PDF 링크 (PDF.js·Google 문서 뷰어 링크도 됩니다)">
+          <button type="submit" class="secondary" id="pdf-url-submit" formnovalidate>링크 번역</button>
+        </div>
+        <p class="hint">글자를 고를 수 있는 PDF는 어떤 모델로도 됩니다. 스캔본 쪽은 「· 이미지」가 붙은 모델이 필요합니다.</p>
+      </div>
       <div id="panel-image" hidden>
         <div class="row">
-          <label class="file" id="drop"><input type="file" name="image" id="image" accept="image/*,application/pdf,.pdf">
-            <span id="file-label">이미지·PDF 선택 · 끌어놓기 · 붙여넣기</span></label>
+          <label class="file" id="drop"><input type="file" name="image" id="image" accept="image/*">
+            <span id="file-label">이미지 선택 · 끌어놓기 · 붙여넣기</span></label>
           <button type="submit" class="secondary" id="image-submit" formaction="/upload" formmethod="post"
-            formenctype="multipart/form-data" formnovalidate>번역</button>
+            formenctype="multipart/form-data" formnovalidate>이미지 번역</button>
         </div>
-        <p class="hint warn" id="vision-warn" hidden>이 모델은 이미지를 읽지 못합니다. 「· 이미지」가 붙은 모델을 고르세요. (글자를 고를 수 있는 PDF는 이 모델로도 됩니다)</p>
+        <p class="hint warn" id="vision-warn" hidden>이 모델은 이미지를 읽지 못합니다. 「· 이미지」가 붙은 모델을 고르세요.</p>
       </div>
       <div id="panel-text" hidden>
         <textarea name="text" id="text" maxlength="{{ text_max }}" placeholder="번역할 글을 붙여넣으세요. 빈 줄로 문단을 나눕니다."></textarea>
@@ -231,6 +245,7 @@
   const setTab = name => {
     for (const b of document.querySelectorAll('.tabs [data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
     $('panel-url').hidden = name !== 'url';
+    $('panel-pdf').hidden = name !== 'pdf';
     $('panel-image').hidden = name !== 'image';
     $('panel-text').hidden = name !== 'text';
     updateVisionWarn();
@@ -239,7 +254,7 @@
   const updateVisionWarn = () => { $('vision-warn').hidden = !!sel.selectedOptions[0]?.dataset.vision || !sel.options.length; };
   for (const b of document.querySelectorAll('.tabs [data-tab]')) b.addEventListener('click', () => setTab(b.dataset.tab));
   sel.addEventListener('change', updateVisionWarn);
-  try { const t = localStorage.getItem('pepar-tab'); if (t === 'image' || t === 'text') setTab(t); } catch {}
+  try { const t = localStorage.getItem('pepar-tab'); if (['pdf', 'image', 'text'].includes(t)) setTab(t); } catch {}
 
   // 텍스트: 글자 수 표시, 입력 중인 글은 브라우저에 임시 저장
   const textArea = $('text');
@@ -252,33 +267,54 @@
   textArea.addEventListener('input', () => { showCount(); try { localStorage.setItem('pepar-text-draft', textArea.value); } catch {} });
   showCount();
 
-  const fileInput = $('image');
+  const fileInput = $('image'), pdfInput = $('pdf');
   const isPdf = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
   const showFile = () => {
     const f = fileInput.files[0];
-    $('file-label').textContent = f ? f.name : '이미지·PDF 선택 · 끌어놓기 · 붙여넣기';
+    $('file-label').textContent = f ? f.name : '이미지 선택 · 끌어놓기 · 붙여넣기';
   };
-  const setFile = f => {
-    if (!f || !(f.type.startsWith('image/') || isPdf(f))) return false;
+  const showPdf = () => {
+    const f = pdfInput.files[0];
+    $('pdf-label').textContent = f ? f.name : 'PDF 선택 · 끌어놓기';
+  };
+  const put = (input, f) => {
     const dt = new DataTransfer();
     dt.items.add(f);
-    fileInput.files = dt.files;
+    input.files = dt.files;
+  };
+  // 끌어놓거나 붙여넣은 파일: 종류에 맞는 탭으로 보낸다 (이미지 탭에 PDF를 놓으면 PDF 탭으로)
+  const setFile = f => {
+    if (!f) return false;
+    if (isPdf(f)) { put(pdfInput, f); setTab('pdf'); showPdf(); return true; }
+    if (!f.type.startsWith('image/')) return false;
+    put(fileInput, f);
     setTab('image');
     showFile();
     return true;
   };
   fileInput.addEventListener('change', showFile);
-  const drop = $('drop');
-  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
-  drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
-  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); setFile(e.dataTransfer.files[0]); });
+  pdfInput.addEventListener('change', showPdf);
+  for (const drop of [$('drop'), $('drop-pdf')]) {
+    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+    drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); setFile(e.dataTransfer.files[0]); });
+  }
+  $('pdf-submit').addEventListener('click', e => {
+    if (!pdfInput.files.length) { e.preventDefault(); pdfInput.click(); }
+  });
+  $('pdf-url-submit').addEventListener('click', e => {
+    if (!$('pdf-url').value.trim()) { e.preventDefault(); $('pdf-url').focus(); }
+  });
+  // PDF 링크 칸에서 Enter: 폼의 기본 버튼(문서 탭의 번역)이 아니라 링크 번역으로
+  $('pdf-url').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); $('pdf-url-submit').click(); }
+  });
   document.addEventListener('paste', e => {
     const f = [...(e.clipboardData?.files || [])].find(f => f.type.startsWith('image/'));
     if (f && setFile(new File([f], f.name && f.name !== 'image.png' ? f.name : `붙여넣은 이미지 ${new Date().toLocaleString()}.png`, { type: f.type }))) e.preventDefault();
   });
   $('image-submit').addEventListener('click', e => {
     if (!fileInput.files.length) { e.preventDefault(); fileInput.click(); return; }
-    if (isPdf(fileInput.files[0])) return;  // 글자 레이어가 있는 PDF는 이미지를 읽는 모델이 아니어도 된다
     if (!sel.selectedOptions[0]?.dataset.vision && !confirm(`${sel.value}은(는) 이미지를 읽지 못하는 모델로 보입니다. 그래도 보낼까요?`)) e.preventDefault();
     // e2b·e4b는 작아서 글자를 지어내거나 위치를 크게 틀린다
     else if (/-e[24]b$/.test(sel.value) && !confirm(`${sel.value}은(는) 작은 모델이라 글자 위치와 내용이 부정확합니다. gemma4-12b를 권장합니다.\n그래도 ${sel.value}로 번역할까요?`)) e.preventDefault();
@@ -295,10 +331,12 @@
       textArea.focus();
       return;
     }
-    // 고른 방식에 필요한 것만 보낸다 (주소 번역에 긴 텍스트가 주소창으로 실려 가지 않도록)
-    if (e.submitter?.id !== 'image-submit') fileInput.disabled = true;
-    if (e.submitter?.id !== 'text-submit') textArea.disabled = true;
-    setTimeout(() => { fileInput.disabled = false; textArea.disabled = false; });
+    // 누른 버튼이 있는 탭의 입력만 보낸다 (주소 번역에 긴 텍스트가 주소창으로 실려 가지 않도록)
+    const panel = (e.submitter || $('panel-url')).closest('[id^="panel-"]');
+    const off = [...document.querySelectorAll('[id^="panel-"] input, [id^="panel-"] textarea')]
+      .filter(x => !panel.contains(x) && !x.disabled);
+    off.forEach(x => { x.disabled = true; });
+    setTimeout(() => off.forEach(x => { x.disabled = false; }));
   });
   const el = (tag, props = {}, ...kids) => {
     const e = document.createElement(tag);

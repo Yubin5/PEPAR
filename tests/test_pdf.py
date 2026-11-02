@@ -69,7 +69,7 @@ class PdfUploadTest(unittest.TestCase):
 
     def test_upload_translate_view_delete(self):
         import io
-        r = self.client.post("/upload", data={"model": "a", "image": (io.BytesIO(SAMPLE), "paper.pdf")})
+        r = self.client.post("/upload", data={"model": "a", "pdf": (io.BytesIO(SAMPLE), "paper.pdf")})  # PDF 탭의 파일 칸
         key = r.headers["Location"].rsplit("/", 1)[1]
         self.assertTrue(key.startswith("p-"))
         self.client.get(f"/view/a/{key}")
@@ -112,6 +112,11 @@ class ArxivPdfFallbackTest(unittest.TestCase):
 
 
 class ViewerUrlTest(unittest.TestCase):
+    def test_pdf_tab_link_field(self):
+        r = pepar.app.test_client().get("/open?model=a&url=&pdf_url=https://y.org/b.pdf")
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers["Location"], f"/view/a/{translator.parse_source('https://y.org/b.pdf').key}")
+
     def test_unwrap(self):
         self.assertEqual(translator.parse_source("https://x.org/pdfjs/web/viewer.html?file=/files/a.pdf").url, "https://x.org/files/a.pdf")
         self.assertEqual(translator.parse_source("https://docs.google.com/viewer?url=https://y.org/b.pdf&embedded=true").url, "https://y.org/b.pdf")

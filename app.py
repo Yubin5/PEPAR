@@ -684,7 +684,7 @@ def open_link():
         if not MODEL_RE.match(model) or "@" in model:
             abort(400)
         lang = pick_lang(request.args.get("lang"), request.args.get("lang_text"))
-        src = translator.parse_source(request.args.get("url", ""))
+        src = translator.parse_source(request.args.get("url") or request.args.get("pdf_url", ""))  # pdf_url: PDF 탭의 링크 칸
     except translator.PeparError as e:
         return render_template("progress.html", error=str(e), model="", key="", src_url=""), 400
     remember_source(src)
@@ -708,7 +708,7 @@ def upload():
         lang = pick_lang(request.form.get("lang"), request.form.get("lang_text"))
     except translator.PeparError as e:
         return fail(str(e))
-    f = request.files.get("image")
+    f = request.files.get("pdf") or request.files.get("image")  # PDF 탭이면 pdf, 이미지 탭이면 image
 
     if not f or not f.filename:
         return fail("이미지나 PDF 파일을 골라 주세요.")
