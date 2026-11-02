@@ -8,7 +8,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import parse_qs, urldefrag, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -47,6 +47,25 @@ class Source:
     url: str  # web이면 원본 URL, arxiv면 논문 ID
 
 
+class PdfFound(Exception):
+    """가져온 문서가 PDF였다. app이 PDF 번역으로 넘긴다."""
+
+    def __init__(self, data: bytes, url: str):
+        super().__init__(url)
+        self.data, self.url = data, url
+
+
+def unwrap_viewer(url: str) -> str:
+    """웹 PDF 뷰어로 감싼 주소면 안쪽 PDF 주소를. PDF.js(viewer.html?file=...), Google Docs·Drive 뷰어(?url=...)."""
+    u = urlparse(url)
+    q = parse_qs(u.query)
+    if u.path.endswith("viewer.html") and q.get("file"):
+        return urljoin(url, q["file"][0])  # PDF.js: file은 뷰어 기준 상대 경로일 수 있다
+    if u.hostname in ("docs.google.com", "drive.google.com") and ("viewer" in u.path or "gview" in u.path) and q.get("url"):
+        return q["url"][0]
+    return url
+
+
 def parse_source(text: str) -> Source:
     text = text.strip()
     if not text:
@@ -65,7 +84,9 @@ def parse_source(text: str) -> Source:
             raise PeparError("arXiv 링크에서 논문 ID를 찾지 못했습니다.")
         arxiv_id = m.group(1) + (m.group(2) or "")
         return Source("arxiv", arxiv_id, arxiv_id)
-    url = urldefrag(text)[0]
+    url = urldefrag(unwrap_viewer(text))[0]
+    if url != urldefrag(text)[0] and not re.match(r"^https?://", url, re.I):
+        raise PeparError("PDF 뷰어 주소에서 PDF 파일 주소를 찾지 못했습니다.")
     return Source("web", "w-" + hashlib.sha1(url.encode()).hexdigest()[:12], url)
 
 
@@ -127,7 +148,14 @@ def load_arxiv(src: Source, lang: str = "ko") -> Doc:
     except requests.RequestException as e:
         raise PeparError(f"arXiv에서 논문을 가져오지 못했습니다: {describe_request_error(e)}") from e
     if r.status_code == 404:
-        raise PeparError("이 논문은 arXiv HTML 버전이 없습니다 (LaTeX → HTML 변환 실패 논문). 논문 ID가 맞는지도 확인해 주세요.")
+        # HTML 버전이 없는 논문(LaTeX → HTML 변환 실패)은 PDF로 번역한다
+        try:
+            p = requests.get(f"https://arxiv.org/pdf/{src.url}", headers=UA_PEPAR, timeout=120)
+        except requests.RequestException as e:
+            raise PeparError(f"arXiv에서 논문 PDF를 가져오지 못했습니다: {describe_request_error(e)}") from e
+        if p.status_code == 200 and p.content.startswith(b"%PDF-"):
+            raise PdfFound(p.content, p.url)
+        raise PeparError("arXiv에서 이 논문을 찾지 못했습니다 (HTML·PDF 모두 없음). 논문 ID가 맞는지 확인해 주세요.")
     if r.status_code >= 400:
         raise PeparError(f"arXiv에서 논문을 가져오지 못했습니다 (HTTP {r.status_code}).")
     soup = BeautifulSoup(r.content, "lxml")
@@ -168,8 +196,10 @@ def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: s
     if r.status_code >= 400:
         raise PeparError(f"페이지를 가져오지 못했습니다 (HTTP {r.status_code}).")
     ctype = r.headers.get("content-type", "")
+    if "pdf" in ctype or r.content.startswith(b"%PDF-"):
+        raise PdfFound(r.content, r.url)
     if "html" not in ctype and "xml" not in ctype:
-        raise PeparError(f"HTML 페이지가 아닙니다 ({ctype.split(';')[0] or '알 수 없는 형식'}). PDF 등은 아직 지원하지 않습니다.")
+        raise PeparError(f"HTML 페이지도 PDF도 아닙니다 ({ctype.split(';')[0] or '알 수 없는 형식'}).")
     soup = BeautifulSoup(r.content, "lxml")
     if not soup.body:
         raise PeparError("페이지 본문이 비어 있습니다.")
@@ -458,6 +488,8 @@ Rules:
 # 문체 지시. 언어별로 따로 정한 것이 없으면 "*"를 쓴다. 이미지의 예시 낱말은 언어마다 다르다
 STYLE = {
     "ko": {
+        "pdf": "This is a PDF document (often a paper or report). Each item is a paragraph, heading or label drawn over the "
+        "original in its box: use the written plain style (~한다, ~이다) for prose and translate headings and labels concisely.",
         "arxiv": "This is an academic paper: use the written plain style (~한다, ~이다), not 합니다체.",
         "web": "Use the written plain style (~한다, ~이다) for prose; translate short UI labels and headings concisely.",
     },
@@ -465,6 +497,8 @@ STYLE = {
         "arxiv": "This is an academic paper: use the written plain style (である調), not です・ます調.",
     },
     "*": {
+        "pdf": "This is a PDF document (often a paper or report). Each item is a paragraph, heading or label drawn over the "
+        "original in its box: use a formal written register for prose and translate headings and labels concisely.",
         "text": "This is plain text pasted by the user. Keep its tone and register (formal or casual, polite or plain) "
         "and keep list markers and numbering.",
         "arxiv": "This is an academic paper: use a formal academic register.",

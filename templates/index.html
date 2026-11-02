@@ -81,7 +81,7 @@
   .chips { margin: 0 0 10px; }
   .chips .n { opacity: .7; margin-left: 4px; font-variant-numeric: tabular-nums; }
 
-  .kind-doc { --k: #2e8b57; } .kind-image { --k: #8e44ad; } .kind-text { --k: #c27c0e; }
+  .kind-doc { --k: #2e8b57; } .kind-image { --k: #8e44ad; } .kind-text { --k: #c27c0e; } .kind-pdf { --k: #c0392b; }
   textarea { width: 100%; min-height: 160px; padding: 12px 14px; font: inherit; line-height: 1.6; resize: vertical;
     border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
   .text-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
@@ -125,7 +125,7 @@
   <div class="card">
     <div class="tabs" role="tablist" aria-label="번역할 대상">
       <button type="button" role="tab" id="tab-url" data-tab="url" aria-selected="true">문서</button>
-      <button type="button" role="tab" id="tab-image" data-tab="image" aria-selected="false">이미지</button>
+      <button type="button" role="tab" id="tab-image" data-tab="image" aria-selected="false">이미지·PDF</button>
       <button type="button" role="tab" id="tab-text" data-tab="text" aria-selected="false">텍스트</button>
     </div>
     <form action="/open" method="get" id="form">
@@ -137,12 +137,12 @@
       </div>
       <div id="panel-image" hidden>
         <div class="row">
-          <label class="file" id="drop"><input type="file" name="image" id="image" accept="image/*">
-            <span id="file-label">이미지 선택 · 끌어놓기 · 붙여넣기</span></label>
+          <label class="file" id="drop"><input type="file" name="image" id="image" accept="image/*,application/pdf,.pdf">
+            <span id="file-label">이미지·PDF 선택 · 끌어놓기 · 붙여넣기</span></label>
           <button type="submit" class="secondary" id="image-submit" formaction="/upload" formmethod="post"
-            formenctype="multipart/form-data" formnovalidate>이미지 번역</button>
+            formenctype="multipart/form-data" formnovalidate>번역</button>
         </div>
-        <p class="hint warn" id="vision-warn" hidden>이 모델은 이미지를 읽지 못합니다. 「· 이미지」가 붙은 모델을 고르세요.</p>
+        <p class="hint warn" id="vision-warn" hidden>이 모델은 이미지를 읽지 못합니다. 「· 이미지」가 붙은 모델을 고르세요. (글자를 고를 수 있는 PDF는 이 모델로도 됩니다)</p>
       </div>
       <div id="panel-text" hidden>
         <textarea name="text" id="text" maxlength="{{ text_max }}" placeholder="번역할 글을 붙여넣으세요. 빈 줄로 문단을 나눕니다."></textarea>
@@ -163,6 +163,7 @@
     <h2>번역한 문서 <span class="count" id="docs-count"></span></h2>
     <div class="chips" id="kind-filter" role="group" aria-label="표시할 종류">
       <button type="button" data-kind="doc" aria-pressed="true">문서<span class="n"></span></button>
+      <button type="button" data-kind="pdf" aria-pressed="true">PDF<span class="n"></span></button>
       <button type="button" data-kind="image" aria-pressed="true">이미지<span class="n"></span></button>
       <button type="button" data-kind="text" aria-pressed="true">텍스트<span class="n"></span></button>
     </div>
@@ -252,12 +253,13 @@
   showCount();
 
   const fileInput = $('image');
+  const isPdf = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
   const showFile = () => {
     const f = fileInput.files[0];
-    $('file-label').textContent = f ? f.name : '이미지 선택 · 끌어놓기 · 붙여넣기';
+    $('file-label').textContent = f ? f.name : '이미지·PDF 선택 · 끌어놓기 · 붙여넣기';
   };
   const setFile = f => {
-    if (!f || !f.type.startsWith('image/')) return false;
+    if (!f || !(f.type.startsWith('image/') || isPdf(f))) return false;
     const dt = new DataTransfer();
     dt.items.add(f);
     fileInput.files = dt.files;
@@ -276,6 +278,7 @@
   });
   $('image-submit').addEventListener('click', e => {
     if (!fileInput.files.length) { e.preventDefault(); fileInput.click(); return; }
+    if (isPdf(fileInput.files[0])) return;  // 글자 레이어가 있는 PDF는 이미지를 읽는 모델이 아니어도 된다
     if (!sel.selectedOptions[0]?.dataset.vision && !confirm(`${sel.value}은(는) 이미지를 읽지 못하는 모델로 보입니다. 그래도 보낼까요?`)) e.preventDefault();
     // e2b·e4b는 작아서 글자를 지어내거나 위치를 크게 틀린다
     else if (/-e[24]b$/.test(sel.value) && !confirm(`${sel.value}은(는) 작은 모델이라 글자 위치와 내용이 부정확합니다. gemma4-12b를 권장합니다.\n그래도 ${sel.value}로 번역할까요?`)) e.preventDefault();
@@ -307,10 +310,12 @@
                  : s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
   const host = u => { try { return new URL(u).hostname; } catch { return u || ''; } };
   // key 접두사 i-는 이미지, 그 외는 문서
-  const kindOf = key => key.startsWith('i-') ? 'image' : key.startsWith('t-') ? 'text' : 'doc';
-  const KIND_LABEL = { doc: '문서', image: '이미지', text: '텍스트' };
+  // 종류는 서버가 알려 준다 (PDF였던 웹 주소도 pdf). 모르면 key로 짐작
+  const kindOf = x => x.kind || (x.key.startsWith('i-') ? 'image' : x.key.startsWith('t-') ? 'text' : x.key.startsWith('p-') ? 'pdf' : 'doc');
+  const KIND_LABEL = { doc: '문서', pdf: 'PDF', image: '이미지', text: '텍스트' };
+  const UNIT = { doc: '블록', pdf: '문단', image: '라벨', text: '블록' };  // 번역 단위
   const sourceOf = (key, url) => key.startsWith('w-') ? host(url) : 'arXiv';
-  const kindTag = key => el('span', { className: `tag kind kind-${kindOf(key)}`, textContent: KIND_LABEL[kindOf(key)] });
+  const kindTag = x => el('span', { className: `tag kind kind-${kindOf(x)}`, textContent: KIND_LABEL[kindOf(x)] });
 
   function when(iso) {
     const d = new Date(iso), s = (Date.now() - d) / 1000;
@@ -376,8 +381,8 @@
       return el('li', {},
         el('a', { href, target: '_blank', textContent: j.title || j.url || j.key }),
         el('div', { className: 'meta' },
-          kindTag(j.key),
-          kindOf(j.key) === 'doc' ? el('span', { textContent: sourceOf(j.key, j.url) }) : null,
+          kindTag(j),
+          kindOf(j) === 'doc' || (kindOf(j) === 'pdf' && !j.key.startsWith('p-')) ? el('span', { textContent: sourceOf(j.key, j.url) }) : null,
           el('span', { className: 'tag', textContent: j.llm || j.model }),
           langTag(j.lang, j.lang_name, j.custom_lang)),
         bar,
@@ -413,7 +418,7 @@
     renderDocs();
   }
 
-  let kinds = new Set(['doc', 'image', 'text']);
+  let kinds = new Set(Object.keys(KIND_LABEL));
   try { const s = JSON.parse(localStorage.getItem('pepar-kinds')); if (Array.isArray(s)) kinds = new Set(s.filter(k => k in KIND_LABEL)); } catch {}
   for (const b of document.querySelectorAll('#kind-filter [data-kind]')) b.addEventListener('click', () => {
     kinds.has(b.dataset.kind) ? kinds.delete(b.dataset.kind) : kinds.add(b.dataset.kind);
@@ -426,16 +431,16 @@
     const terms = q.split(/\s+/).filter(Boolean);
     const matched = docs.filter(d => {
       if (!terms.length) return true;
-      const hay = `${d.title} ${d.where} ${KIND_LABEL[kindOf(d.key)]} ${d.model} ${d.lang_name} ${d.url} ${d.key}`.toLowerCase();
+      const hay = `${d.title} ${d.where} ${KIND_LABEL[kindOf(d)]} ${d.model} ${d.lang_name} ${d.url} ${d.key}`.toLowerCase();
       return terms.every(t => hay.includes(t)) || contentHits.has(`${d.model}/${d.key}`);
     });
-    const counts = { doc: 0, image: 0, text: 0 };
-    for (const d of matched) counts[kindOf(d.key)]++;
+    const counts = { doc: 0, pdf: 0, image: 0, text: 0 };
+    for (const d of matched) counts[kindOf(d)]++;
     for (const b of document.querySelectorAll('#kind-filter [data-kind]')) {
       b.setAttribute('aria-pressed', String(kinds.has(b.dataset.kind)));
       b.querySelector('.n').textContent = counts[b.dataset.kind];
     }
-    const shown = matched.filter(d => kinds.has(kindOf(d.key)));
+    const shown = matched.filter(d => kinds.has(kindOf(d)));
     $('docs-count').textContent = terms.length || kinds.size < Object.keys(KIND_LABEL).length ? `${shown.length} / ${docs.length}개` : `${docs.length}개`;
     if (!shown.length) {
       const msg = !docs.length ? '아직 번역한 문서가 없습니다.' : !kinds.size ? '표시할 종류를 하나 이상 켜 주세요.'
@@ -445,22 +450,23 @@
     }
     $('docs').replaceChildren(...shown.map(d => {
       const hit = contentHits.get(`${d.model}/${d.key}`);
-      const kind = kindOf(d.key);
+      const kind = kindOf(d);
       const meta = el('div', { className: 'meta' },
-        kindTag(d.key),
-        kind === 'doc' ? el('span', { textContent: d.where }) : null,
+        kindTag(d),
+        kind === 'doc' || (kind === 'pdf' && !d.key.startsWith('p-')) ? el('span', { textContent: d.where }) : null,
         el('span', { className: 'tag', textContent: d.llm }),
         langTag(d.lang, d.lang_name, d.custom_lang),
         el('span', { textContent: when(d.translated_at), title: '번역한 시각' }));
-      if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}${kind === 'image' ? '개 라벨' : '블록'}` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
-      if (d.failed) meta.append(el('span', { className: 'warn' }, `실패 ${d.failed}${kind === 'image' ? '라벨' : '블록'} · `,
+      if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}${kind === 'image' ? '개 라벨' : UNIT[kind]}` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
+      if (d.failed) meta.append(el('span', { className: 'warn' }, `실패 ${d.failed}${UNIT[kind]} · `,
         el('a', { href: '#', textContent: '재번역', title: '실패한 항목만 다시 번역', onclick: e => { e.preventDefault(); retranslate(d, true); } })));
       const more = el('button', { className: 'more', type: 'button', textContent: '⋯', title: '더 보기' });
       more.setAttribute('aria-haspopup', 'menu');
       more.setAttribute('aria-expanded', 'false');
       more.addEventListener('click', e => { e.stopPropagation(); openMenu(more, d); });
       return el('li', {},
-        kind === 'image' ? el('img', { className: 'thumb', src: `/image/${encodeURIComponent(d.key)}`, loading: 'lazy', alt: '' }) : null,
+        kind === 'image' ? el('img', { className: 'thumb', src: `/image/${encodeURIComponent(d.key)}`, loading: 'lazy', alt: '' })
+          : kind === 'pdf' ? el('img', { className: 'thumb', src: `/pdf/${encodeURIComponent(d.key)}/1.png`, loading: 'lazy', alt: '', style: 'object-position: top' }) : null,
         el('div', { className: 'body' },
           el('a', { href: docHref(d), target: '_blank' }, highlight(d.title, terms)),
           meta,
@@ -484,7 +490,7 @@
     if (same) return;
     menu = el('div', { className: 'menu', role: 'menu' },
       el('a', { href: docHref(d), target: '_blank', textContent: '열기' }),
-      d.failed ? el('button', { type: 'button', textContent: `실패 ${d.failed}${kindOf(d.key) === 'image' ? '라벨' : '블록'}만 다시 번역`, onclick: () => { closeMenu(); retranslate(d, true); } }) : null,
+      d.failed ? el('button', { type: 'button', textContent: `실패 ${d.failed}${UNIT[kindOf(d)]}만 다시 번역`, onclick: () => { closeMenu(); retranslate(d, true); } }) : null,
       el('button', { type: 'button', textContent: '전체 다시 번역', onclick: () => { closeMenu(); retranslate(d, false); } }),
       el('button', { type: 'button', className: 'danger', textContent: '삭제…', onclick: () => { closeMenu(); confirmDelete(d); } }));
     menu.anchor = anchor;
@@ -502,8 +508,8 @@
 
   function retranslate(d, failedOnly) {
     const dlg = $('retranslate'), pick = $('retranslate-model');
-    const image = kindOf(d.key) === 'image';
-    $('retranslate-title').textContent = failedOnly ? `실패한 ${image ? '라벨' : '블록'}만 다시 번역` : '전체 다시 번역';
+    const image = kindOf(d) === 'image';
+    $('retranslate-title').textContent = failedOnly ? `실패한 ${UNIT[kindOf(d)]}만 다시 번역` : '전체 다시 번역';
     $('retranslate-text').textContent = `“${d.title}”`;
     pick.replaceChildren(...[...sel.options].map(o => {
       const opt = el('option', { value: o.value, textContent: o.textContent });

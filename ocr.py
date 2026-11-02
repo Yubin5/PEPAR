@@ -289,8 +289,12 @@ def _join(a: str, b: str) -> str:
     return a + ("" if CJK.match(a[-1:]) and CJK.match(b[:1]) else " ") + b
 
 
-def _blocks(labels: list[dict], W: int, H: int) -> list[dict]:
-    """여러 줄 문단을 줄마다 따로 번역하면 문장이 끊기고 덮개가 겹친다. 바로 아래·비슷한 글자 크기·왼쪽이나 가운데 정렬인 줄은 한 문단으로 합친다. lines는 합친 줄 수."""
+def _blocks(labels: list[dict], W: int, H: int, paragraphs: bool = False) -> list[dict]:
+    """여러 줄 문단을 줄마다 따로 번역하면 문장이 끊기고 덮개가 겹친다. 바로 아래·비슷한 글자 크기·왼쪽이나 가운데 정렬인 줄은 한 문단으로 합친다. lines는 합친 줄 수.
+
+    paragraphs: PDF처럼 문단 사이에 빈 줄 없이 들여쓰기만 있는 글에서, 왼쪽 정렬된 줄이라도 앞 줄이 짧게 끝났거나
+    (문단의 마지막 줄) 이 줄이 들여 써졌으면(문단의 첫 줄) 새 문단으로 본다.
+    """
     px = lambda b: (b[0] * W, b[1] * H, b[2] * W, b[3] * H)  # noqa: E731
     blocks = []
     for lb in sorted(labels, key=lambda lb: (lb["box"][1], lb["box"][0])):
@@ -305,7 +309,10 @@ def _blocks(labels: list[dict], W: int, H: int) -> list[dict]:
             if not (ly1 < y1 and y1 - ly2 < 0.6 * lh and 0.7 < h / lh < 1.4):
                 continue
             bx1, _, bx2, _ = px(bl["box"])
-            aligned = abs(x1 - bx1) < 1.5 * lh or abs((x1 + x2) / 2 - (bx1 + bx2) / 2) < 1.5 * lh
+            left = abs(x1 - bx1) < 1.5 * lh
+            aligned = left or abs((x1 + x2) / 2 - (bx1 + bx2) / 2) < 1.5 * lh
+            if paragraphs and left and (x1 - bx1 > 0.5 * lh or lx2 < bx2 - 3 * lh):
+                break  # 새 문단
             if aligned and min(x2, bx2) > max(x1, bx1):
                 target = bl
                 break
@@ -367,12 +374,21 @@ def run(model: str, data: bytes, on_progress, checkpoint=None, lang: str = "ko")
     if not labels:
         raise translator.PeparError("이미지에서 글자를 찾지 못했습니다.")
 
-    # 숫자·기호뿐인 라벨은 번역할 게 없으니 원문 그대로 둔다
-    # 번역문은 언어와 상관없이 "ko" 키에 둔다 (예전 결과 파일과 맞추려고)
+    def save():
+        if checkpoint:
+            checkpoint.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+
+    failed = translate_labels(model, labels, on_progress, lang, "image", save)
+    return labels, failed
+
+
+def translate_labels(model: str, labels: list[dict], on_progress, lang: str, kind: str, save=lambda: None) -> int:
+    """라벨마다 번역문을 "ko" 키에 채운다 (언어와 상관없이 이 키: 예전 결과 파일과 맞추려고). 이미 있는 것은 건너뛴다.
+    숫자·기호뿐인 라벨은 번역할 게 없으니 원문 그대로 둔다. 묶음마다 save()를 부른다. 실패한 라벨 수를 돌려준다."""
     todo = [i for i, lb in enumerate(labels) if "ko" not in lb and translator.worth(lb["text"], lang)]
     items = [{"text": lb["text"]} for lb in labels]
     context = "\n".join(lb["text"] for lb in labels)[:3000]
-    system = translator.system_prompt(context, "image", lang)
+    system = translator.system_prompt(context, kind, lang)
     total = sum(1 for lb in labels if translator.worth(lb["text"], lang))
     done = total - len(todo)
     on_progress("translating", done, total)
@@ -380,9 +396,7 @@ def run(model: str, data: bytes, on_progress, checkpoint=None, lang: str = "ko")
         real = [todo[k] for k in idxs]
         for i, t in translator.translate_batch(model, system, items, real).items():
             labels[i]["ko"] = clean(t)
-        if checkpoint:
-            checkpoint.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+        save()
         done += len(real)
         on_progress("translating", done, total)
-    failed = sum(1 for lb in labels if "ko" not in lb and translator.worth(lb["text"], lang))
-    return labels, failed
+    return sum(1 for lb in labels if "ko" not in lb and translator.worth(lb["text"], lang))
