@@ -195,10 +195,11 @@ def read(model: str, pdf_path: Path, pages_dir: Path, on_progress) -> list[dict]
             tp.close()
             if chars >= MIN_CHARS:
                 pages.append({"labels": ocr._blocks(page_lines(page), W, H, paragraphs=True), "ocr": False})
+                pages[-1]["pt"] = [round(W, 2), round(H, 2)]  # 쪽 크기(포인트). 번역본을 PDF로 저장할 때 원본과 같은 크기로
             else:
                 try:
                     labels = ocr.read_image(model, (pages_dir / f"{n}.png").read_bytes(), lambda *a: None)
-                    pages.append({"labels": labels, "ocr": True})
+                    pages.append({"labels": labels, "ocr": True, "pt": [round(W, 2), round(H, 2)]})
                 except translator.PeparError:
                     raise
                 except Exception as e:  # noqa: BLE001 - 비전이 안 되는 모델 등. 그 쪽만 원문으로 둔다

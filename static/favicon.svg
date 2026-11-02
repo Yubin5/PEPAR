@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="95 42 322 402">
+  <!-- 접힌 모서리가 있는 종이에, ^^ 눈과 웃는 입, 침 한 줄기 (사용자 손그림을 따라 그림) -->
+  <g fill="none" stroke="#000" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M117 62 H320 L397 139 V424 H117 Z" fill="#fff"/>
+    <path d="M320 62 V139 H397"/>
+    <path d="M166 233 C186 198 204 176 218 153 C224 176 230 202 236 228"/>
+    <path d="M270 225 C285 202 300 184 316 163 C325 180 331 203 333 225"/>
+    <path d="M220 266 C232 300 248 316 264 314 C282 312 294 294 302 270"/>
+  </g>
+  <path d="M296 290 C304 312 310 336 316 380" fill="none" stroke="#1e9be0" stroke-width="14" stroke-linecap="round" stroke-dasharray="20 18"/>
+</svg>

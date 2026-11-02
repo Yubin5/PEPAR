@@ -314,7 +314,7 @@ def load_text(src: Source, text: str, lang: str = "ko") -> Doc:
         raise PeparError("번역할 텍스트가 비어 있습니다.")
     title = paras[0][0][:80]
     soup = BeautifulSoup(
-        f"<!doctype html><html><head><title></title><style>{TEXT_CSS}</style></head>"
+        f'<!doctype html><html><head><title></title><link rel="icon" href="/favicon.svg" type="image/svg+xml"><style>{TEXT_CSS}</style></head>'
         '<body><main class="pepar-text"></main></body></html>',
         "lxml",
     )

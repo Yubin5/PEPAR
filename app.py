@@ -49,6 +49,7 @@ class Cancelled(Exception):
 
 
 app = Flask(__name__, static_folder=None)
+STATIC = Path(__file__).parent / "static"  # 파비콘
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 
 # llama-server가 parallel=1이라 번역은 한 번에 하나씩
@@ -389,11 +390,14 @@ def translate_pdf(model, key, title, progress, checkpoint, llm, lang) -> tuple[s
         return render_pdf(model, key, data), failed
 
 
-def render_overlay(model: str, key: str, title: str, pages: list[dict], failed: int, source_href: str, source_label: str) -> str:
-    """원본 그림 위에 번역문을 덮는 보기 화면. pages: [{src, width, height, labels, error?}] (이미지는 한 쪽)."""
+def render_overlay(model: str, key: str, title: str, pages: list[dict], failed: int, source_href: str, source_label: str,
+                   pdf: bool = False) -> str:
+    """원본 그림 위에 번역문을 덮는 보기 화면. pages: [{src, width, height, labels, error?, pt?}] (이미지는 한 쪽).
+    pdf면 번역본을 PDF로 저장한다 (아니면 PNG)."""
     return render_template(
         "image_view.html", model=slot_label(model), lang=split_slot(model)[1], key=key, title=title, pages=pages,
         failed=failed, retry_url=f"/view/{model}/{key}?retry_failed=1", source_href=source_href, source_label=source_label,
+        pdf=pdf, page_pt=[pg.get("pt") for pg in pages] if pdf else [],  # 예전 결과에는 쪽 크기가 없다 (None)
     )
 
 
@@ -404,7 +408,7 @@ def render_image(model: str, key: str, data: dict) -> str:
 
 def render_pdf(model: str, key: str, data: dict) -> str:
     pages = [{**pg, "src": f"/pdf/{key}/{n}.png"} for n, pg in enumerate(data["pages"], 1)]
-    return render_overlay(model, key, data["title"], pages, data["failed"], f"/pdf/{key}", "원본 PDF")
+    return render_overlay(model, key, data["title"], pages, data["failed"], f"/pdf/{key}", "원본 PDF", pdf=True)
 
 
 def save_failed():
@@ -605,7 +609,7 @@ def safe_next(path: str) -> str:
 
 @app.before_request
 def require_login():
-    if not PASSWORD or request.endpoint in ("login", "logout") or logged_in():
+    if not PASSWORD or request.endpoint in ("login", "logout", "icon") or logged_in():
         return None
     if request.path.startswith("/api/"):
         return jsonify(error="로그인이 필요합니다."), 401
@@ -666,6 +670,12 @@ def http_error(e: HTTPException):
     if request.path.startswith("/api/"):
         return jsonify(error=msg), e.code
     return render_template("progress.html", error=msg, model="", key="", src_url=""), e.code
+
+
+@app.get("/<any('favicon.ico', 'favicon.svg', 'apple-touch-icon.png'):name>")
+def icon(name):
+    """파비콘. 로그인 화면에서도 보이도록 로그인 없이 준다."""
+    return send_file(STATIC / name, max_age=7 * 86400)
 
 
 @app.get("/")

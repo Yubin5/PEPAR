@@ -54,6 +54,7 @@
     {% if failed %}<a class="retry" href="{{ retry_url }}" title="번역에 실패한 라벨만 다시 번역">실패 {{ failed }}개 재번역</a>{% endif %}
     <a href="/">PEPAR</a>
     <a href="{{ source_href }}" target="_blank" rel="noopener">{{ source_label }}</a>
+    <button id="save" type="button" title="화면에 보이는 번역 그대로 {{ 'PDF' if pdf else 'PNG' }} 파일로 저장">번역본 저장</button>
     <button id="toggle" class="primary" type="button">원문 보기</button>
   </div>
 
@@ -82,6 +83,7 @@
   {% if multi %}</details>{% endif %}
 </main>
 <script id="labels" type="application/json">{{ pages|map(attribute='labels')|list|tojson }}</script>
+<script id="pagesizes" type="application/json">{{ page_pt|tojson }}</script>
 <script>
 (() => {
   const allLabels = JSON.parse(document.getElementById('labels').textContent);  // 쪽마다 라벨 목록 (이미지는 한 쪽)
@@ -95,6 +97,8 @@
 
   // 쪽 하나(원본 그림 + 그 위 덮개)를 꾸민다
   function setupPage(stage, img, labels, nodes) {
+    let ready;
+    const page = { stage, img, labels, ready: new Promise(r => { ready = r; }) };  // 번역본 저장에서 쓴다
     // 라벨마다 덮개 위치 [x1, y1, x2, y2](원본 픽셀)와 색. 모델 박스는 p·y 아랫부분이 빠지고 몇 px씩 어긋난다.
     // 캔버스를 못 쓰면 고정 여유만 둔다
     function fallback() {
@@ -202,7 +206,7 @@
         const rect = [Math.max(0, x1 - m), Math.max(0, y1 - m), Math.min(W, x2 + m), Math.min(H, y2 + m)];
         if (!photo) return { rect, h, bg: `rgb(${bg})`, fg: `rgb(${fg})` };
         const edge = lum(fg) > 128 ? '#000' : '#fff';  // 글자색과 반대색 외곽선
-        return { rect, h, photo, bg: `rgba(${bg},.6)`, fg: `rgb(${fg})`,
+        return { rect, h, photo, edge, bg: `rgba(${bg},.6)`, fg: `rgb(${fg})`,
                  shadow: [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, 0]].map(([a, b]) => `${a * 1.5}px ${b * 1.5}px 1px ${edge}`).join(',') };
       });
     }
@@ -229,6 +233,8 @@
       });
       layout();
       new ResizeObserver(layout).observe(stage);
+      page.covers = covers;
+      ready();
     }
 
     // 덮개 위치를 화면 크기에 맞추고, 번역문이 들어가도록 글자 크기를 줄인다
@@ -257,6 +263,7 @@
     }
 
     if (img.complete && img.naturalWidth) build(); else img.addEventListener('load', build);
+    return page;
   }
 
   // 목록에서 줄에 마우스를 올리면 그림의 해당 라벨을 표시한다
@@ -266,10 +273,166 @@
     tr.addEventListener('mouseleave', () => n()?.classList.remove('hl'));
   });
 
+  const allPages = [];
   document.querySelectorAll('.stage').forEach(stage => {
     const p = +stage.dataset.p;
     allNodes[p] = [];
-    setupPage(stage, stage.querySelector('img'), allLabels[p], allNodes[p]);
+    allPages[p] = setupPage(stage, stage.querySelector('img'), allLabels[p], allNodes[p]);
+  });
+
+  // ---------------------------------------------------------- 번역본 저장
+  // 화면과 같은 규칙(덮개 위치·색, 글자 크기 맞추기, 줄바꿈, 사진 위 흐림과 외곽선)으로 원본 크기 그림 위에 다시 그린다.
+  // 이미지는 PNG, PDF는 쪽 그림을 묶은 PDF (글자를 고를 수는 없다)
+  const IS_PDF = {{ pdf|tojson }};
+  const PAGE_PT = JSON.parse(document.getElementById('pagesizes').textContent);  // 쪽 크기(포인트), 모르면 null
+  const FONT = 'system-ui, "Pretendard", "Noto Sans KR", sans-serif';  // .lb와 같은 글꼴
+  const KEEP_ALL = {{ lang|tojson }} === 'ko';  // 한국어는 낱말 단위 줄바꿈 (.lb.wrap의 keep-all)
+  const CJK = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/;
+  const CJK_SPLIT = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]|[^\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]+/g;
+
+  // maxW 안에 들어가게 줄을 나눈다. 한국어·라틴 문자는 낱말 단위, 일본어·중국어 글자는 한 글자씩.
+  // 낱말 하나가 너무 길면 글자 단위로 자른다 (화면의 overflow-wrap: anywhere)
+  function wrapLines(ctx, text, maxW, wrap) {
+    if (!wrap) return [text];
+    const width = s => ctx.measureText(s.trim()).width;
+    const tokens = text.split(/(\s+)/).flatMap(w => !w ? [] : /^\s+$/.test(w) ? [' '] : !KEEP_ALL && CJK.test(w) ? w.match(CJK_SPLIT) : [w]);
+    const lines = [];
+    let cur = '';
+    const place = t => {
+      if (width(t) <= maxW) { cur = t; return; }
+      for (const ch of t) { if (cur && width(cur + ch) > maxW) { lines.push(cur); cur = ''; } cur += ch; }
+    };
+    for (const t of tokens) {
+      if (t === ' ') { if (cur) cur += ' '; continue; }
+      if (!cur.trim()) { cur = ''; place(t); continue; }
+      if (width(cur + t) <= maxW) { cur += t; continue; }
+      lines.push(cur.trim());
+      cur = '';
+      place(t);
+    }
+    if (cur.trim()) lines.push(cur.trim());
+    return lines;
+  }
+
+  function drawPage(page) {
+    const { img, labels, covers } = page;
+    const W = img.naturalWidth, H = img.naturalHeight;
+    const s = page.stage.clientWidth / W || 1;  // 화면 1px이 원본 몇 px인지 (흐림·외곽선 굵기를 화면과 맞춘다)
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    labels.forEach((lb, i) => {
+      if (!lb.ko || lb.ko === lb.text) return;  // 화면에서도 덮지 않는 것
+      const c = covers[i];
+      const [x1, y1, x2, y2] = c.rect;
+      const bw = x2 - x1, bh = y2 - y1;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x1, y1, bw, bh);
+      ctx.clip();  // 화면의 overflow: hidden
+      if (c.photo) {  // 사진 위: 그 자리를 흐리게 다시 그린다
+        ctx.filter = `blur(${12 / s}px)`;
+        ctx.drawImage(img, 0, 0);
+        ctx.filter = 'none';
+      }
+      ctx.fillStyle = c.bg || '#ffffffee';
+      ctx.fillRect(x1, y1, bw, bh);
+      const multi = (lb.lines || 1) > 1, topLeft = multi && lb.align !== 'center';
+      const weight = c.photo ? 800 : 500;
+      let size = c.h * 0.9, wrap = multi, lines;
+      const fits = () => {
+        ctx.font = `${weight} ${size}px ${FONT}`;
+        lines = wrapLines(ctx, lb.ko, bw, wrap);
+        return lines.every(l => ctx.measureText(l).width <= bw + 1) && lines.length * size * 1.15 <= bh + 1;
+      };
+      if (!multi) {
+        while (!fits() && size > c.h * 0.6) size *= 0.92;
+        if (!fits()) wrap = true;
+      }
+      while (!fits() && size > 7 / s) size *= 0.92;
+      const lh = size * 1.15;
+      const top = topLeft ? y1 : y1 + (bh - lines.length * lh) / 2;
+      const x = topLeft ? x1 : x1 + bw / 2;
+      ctx.textAlign = topLeft ? 'left' : 'center';
+      ctx.textBaseline = 'middle';
+      lines.forEach((line, k) => {
+        const y = top + lh * k + lh / 2;
+        if (c.photo) {
+          ctx.lineJoin = 'round';
+          ctx.lineWidth = 3 / s;
+          ctx.strokeStyle = c.edge;
+          ctx.strokeText(line, x, y);
+        }
+        ctx.fillStyle = c.fg || '#111';
+        ctx.fillText(line, x, y);
+      });
+      ctx.restore();
+    });
+    return cv;
+  }
+
+  // 쪽 그림(JPEG)을 쪽마다 하나씩 넣은 PDF. 외부 라이브러리 없이 직접 쓴다
+  function makePdf(pages) {  // [{bytes, w, h, ptW, ptH}]
+    const enc = new TextEncoder();
+    const parts = [], offsets = [];
+    let size = 0;
+    const add = x => { const b = typeof x === 'string' ? enc.encode(x) : x; parts.push(b); size += b.length; };
+    const obj = (n, dict, stream) => {
+      offsets[n] = size;
+      add(`${n} 0 obj\n${dict}`);
+      if (stream) { add('\nstream\n'); add(stream); add('\nendstream'); }
+      add('\nendobj\n');
+    };
+    add('%PDF-1.4\n');
+    add(new Uint8Array([37, 226, 227, 207, 211, 10]));  // 이진 파일 표시
+    obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+    obj(2, `<< /Type /Pages /Kids [${pages.map((_, k) => `${3 + 3 * k} 0 R`).join(' ')}] /Count ${pages.length} >>`);
+    pages.forEach((pg, k) => {
+      const n = 3 + 3 * k, content = enc.encode(`q ${pg.ptW} 0 0 ${pg.ptH} 0 0 cm /Im0 Do Q`);
+      obj(n, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pg.ptW} ${pg.ptH}] /Resources << /XObject << /Im0 ${n + 2} 0 R >> >> /Contents ${n + 1} 0 R >>`);
+      obj(n + 1, `<< /Length ${content.length} >>`, content);
+      obj(n + 2, `<< /Type /XObject /Subtype /Image /Width ${pg.w} /Height ${pg.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${pg.bytes.length} >>`, pg.bytes);
+    });
+    const xref = size, count = 3 + 3 * pages.length;
+    add(`xref\n0 ${count}\n0000000000 65535 f \n` + offsets.slice(1).map(o => `${String(o).padStart(10, '0')} 00000 n \n`).join(''));
+    add(`trailer\n<< /Size ${count} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+    return new Blob(parts, { type: 'application/pdf' });
+  }
+
+  const toBlob = (cv, type, q) => new Promise(r => cv.toBlob(r, type, q));
+  const saveBtn = document.getElementById('save');
+  saveBtn.addEventListener('click', async () => {
+    const label = saveBtn.textContent;
+    saveBtn.disabled = true;
+    try {
+      // 아직 안 불러온 아래쪽 쪽들도 불러와서 덮개를 계산한다
+      allPages.forEach(pg => { pg.img.loading = 'eager'; });
+      const out = [];
+      for (const [k, pg] of allPages.entries()) {
+        saveBtn.textContent = allPages.length > 1 ? `만드는 중… ${k + 1}/${allPages.length}` : '만드는 중…';
+        await pg.ready;
+        const cv = drawPage(pg);
+        if (!IS_PDF) { out.push(await toBlob(cv, 'image/png')); break; }
+        const bytes = new Uint8Array(await (await toBlob(cv, 'image/jpeg', 0.9)).arrayBuffer());
+        const pt = PAGE_PT[k] || [595, 595 * cv.height / cv.width];  // 쪽 크기를 모르면 A4 너비로
+        out.push({ bytes, w: cv.width, h: cv.height, ptW: pt[0], ptH: pt[1] });
+      }
+      const blob = IS_PDF ? makePdf(out) : out[0];
+      const base = {{ title|tojson }}.replace(/\.(pdf|png|jpe?g|webp|gif|bmp)$/i, '');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `[번역] ${base}.${IS_PDF ? 'pdf' : 'png'}`;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    } catch (e) {
+      alert('번역본을 만들지 못했습니다: ' + e.message);
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = label;
+    }
   });
 })();
 </script>
