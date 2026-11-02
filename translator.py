@@ -541,17 +541,36 @@ def system_prompt(context: str, kind: str, lang: str = "ko") -> str:
 
 
 def list_models() -> list[dict]:
+    """[{id, loaded, vision}]. vision: 이미지를 읽는 모델이면 True, 못 읽으면 False, 알 수 없으면 None.
+
+    llama-server는 실행 방식에 따라 대답 형식이 다르다.
+    - 여러 모델을 설정 파일로 돌리는 방식(--models-preset): data의 모델마다 status와
+      architecture.input_modalities(["text", "image"])가 있다.
+    - 모델 하나만 띄우는 방식(-m … --mmproj …): data에는 이름·크기뿐이고, 같은 이름으로 따로 있는
+      models 목록에 capabilities(["completion", "multimodal"])가 있다. 모델은 늘 올라가 있다.
+    """
     url = LLM_URL.rsplit("/chat/completions", 1)[0] + "/models"
     r = requests.get(url, timeout=5)
     r.raise_for_status()
+    body = r.json()
+    caps = {x.get("name") or x.get("model"): x["capabilities"]
+            for x in body.get("models") or [] if isinstance(x, dict) and isinstance(x.get("capabilities"), list)}
     out = []
-    for m in r.json().get("data", []):
+    for m in body.get("data", []):
         if m.get("id") == "default":
             continue
+        modalities = (m.get("architecture") or {}).get("input_modalities")
+        if modalities is not None:
+            vision = "image" in modalities
+        elif m["id"] in caps:
+            vision = "multimodal" in caps[m["id"]]  # 소리만 받는 모델에도 붙지만, 번역에 쓸 일은 드물다
+        else:
+            vision = None
+        status = m.get("status")
         out.append({
             "id": m["id"],
-            "loaded": (m.get("status") or {}).get("value") in ("loaded", "sleeping"),
-            "vision": "image" in (m.get("architecture") or {}).get("input_modalities", []),
+            "loaded": status is None or status.get("value") in ("loaded", "sleeping"),  # status가 없으면 모델 하나 방식
+            "vision": vision,
         })
     return out
 

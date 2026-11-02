@@ -790,7 +790,7 @@ def upload():
         models = {m["id"]: m for m in translator.list_models()}
     except Exception:  # noqa: BLE001 - 목록 없이 진행
         models = {}
-    if model in models and not models[model]["vision"]:
+    if model in models and models[model]["vision"] is False:  # 알 수 없으면(None) 막지 않고 보내 본다
         vision = ", ".join(m for m in models if models[m]["vision"])
         return fail(f"{model}은(는) 이미지를 읽지 못하는 모델입니다. 이미지를 지원하는 모델: {vision}")
     try:
