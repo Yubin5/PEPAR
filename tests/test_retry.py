@@ -131,5 +131,36 @@ class RetryFailedTest(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
+class LLMRetryTest(unittest.TestCase):
+    def test_response_cut_midway_is_retried(self):
+        # LLM 서버가 응답 도중 죽었다가 다시 뜨면, 작업을 실패시키지 않고 다시 보낸다
+        import requests
+
+        class Ok:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"ok": True}
+
+        calls = []
+
+        def fake_post(*a, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise requests.exceptions.ChunkedEncodingError("Response ended prematurely")
+            return Ok()
+
+        orig = translator.requests.post
+        translator.requests.post = fake_post
+        try:
+            self.assertEqual(translator._post({}, attempts=3, wait=0), {"ok": True})
+        finally:
+            translator.requests.post = orig
+        self.assertEqual(len(calls), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

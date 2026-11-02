@@ -574,9 +574,12 @@ def _post(body: dict, attempts: int = 8, wait: int = 20) -> dict:
                 return r.json()
             last = f"HTTP {r.status_code}: {r.text[:200]}"
             detail = f"HTTP {r.status_code}"
-        except (requests.ConnectionError, requests.Timeout) as e:
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as e:
+            # 응답이 중간에 끊긴 것(ChunkedEncodingError)도 기다렸다 다시: 메모리 부족으로 LLM 서버가 죽었다가
+            # 다시 뜨는 경우다 (2026-11-02, PDF 번역 중 OOM으로 죽고 11초 뒤 다시 떴다)
             last = f"{type(e).__name__}: {e}"
-            detail = "응답 시간 초과" if isinstance(e, requests.Timeout) else "연결 실패"
+            detail = ("응답 시간 초과" if isinstance(e, requests.Timeout)
+                      else "응답이 중간에 끊김" if isinstance(e, requests.exceptions.ChunkedEncodingError) else "연결 실패")
         print(f"[pepar] LLM 서버 응답 없음 ({n + 1}/{attempts}), {wait}초 후 재시도: {last}", file=sys.stderr, flush=True)
         time.sleep(wait)
     raise LLMUnavailable(
