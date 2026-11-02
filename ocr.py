@@ -163,11 +163,11 @@ def _runs(flags: list[bool]) -> list[tuple[int, int]]:
     return runs
 
 
-def _cut(flags: list[bool]) -> int | None:
-    """가운데에 가장 가까운 넓은 빈 줄의 중심. 없으면 None."""
+def _cut(flags: list[bool], min_gap: int = MIN_GAP) -> int | None:
+    """가운데에 가장 가까운, min_gap 이상 넓은 빈 줄의 중심. 없으면 None."""
     n, best = len(flags), None
     for a, b in _runs(flags):
-        if a == 0 or b == n or b - a < MIN_GAP:
+        if a == 0 or b == n or b - a < min_gap:
             continue  # 가장자리 여백은 자를 곳이 아니다
         c = (a + b) // 2
         if best is None or min(c, n - c) > min(best, n - best):
@@ -183,11 +183,19 @@ def _trim(gray: Image.Image, box, hard):
         return None
     ny0, ny1 = y0 + rows[0], y0 + rows[-1] + 1
     cols = [i for i, b in enumerate(_blank(gray, (x0, ny0, x1, ny1), 1)) if not b]
+    if not cols:  # 행에는 다른 색이 있지만 어느 열도 내용으로 볼 만큼은 아니다: 얇은 선이나 그라데이션
+        return None
     nx0, nx1 = x0 + cols[0], x0 + cols[-1] + 1
     pad = 4  # 글자 바로 옆에서 자르지 않도록
     nb = (max(x0, nx0 - pad), max(y0, ny0 - pad), min(x1, nx1 + pad), min(y1, ny1 + pad))
     nh = tuple(h and nb[i] == box[i] for i, h in enumerate(hard))
     return nb, nh
+
+
+def _line_height(gray: Image.Image, box) -> int:
+    """영역 안 글자 한 줄의 높이 추정: 내용이 있는 가로줄이 이어진 높이의 중앙값."""
+    runs = sorted(b - a for a, b in _runs([not f for f in _blank(gray, box, 0)]) if b - a >= 3)
+    return runs[len(runs) // 2] if runs else MIN_GAP
 
 
 def _tiles(gray: Image.Image, box, hard=(False,) * 4, out=None) -> list:
@@ -204,7 +212,8 @@ def _tiles(gray: Image.Image, box, hard=(False,) * 4, out=None) -> list:
         return out
     # 긴 쪽부터 빈 줄을 찾고, 없으면 다른 쪽이라도
     for axis in sorted((0, 1), key=lambda a: -(h if a == 0 else w)):
-        c = _cut(_blank(gray, box, axis))
+        # 세로로 자를 때는 글자 한 줄 높이보다 넓은 빈칸에서만 (큰 글씨의 쉼표 뒤 빈칸에서 줄이 잘린 적이 있다)
+        c = _cut(_blank(gray, box, axis), MIN_GAP if axis == 0 else max(MIN_GAP, _line_height(gray, box)))
         if c is None:
             continue
         if axis == 0:
@@ -214,7 +223,12 @@ def _tiles(gray: Image.Image, box, hard=(False,) * 4, out=None) -> list:
             _tiles(gray, (x0, y0, x0 + c, y1), hard[:2] + (False,) + hard[3:], out)
             _tiles(gray, (x0 + c, y0, x1, y1), (False,) + hard[1:], out)
         return out
-    # 빈 줄이 없다: 긴 쪽을 반으로, 겹치게 자른다
+    # 빈 줄이 없다. 한도를 조금 넘는 정도면 통째로 읽는다: 억지로 자르면 경계를 가로지르는 긴 줄은
+    # 양쪽 조각에서 모두 경계에 닿아 버려진다
+    if max(w, h) <= TILE * 1.5:
+        out.append((box, hard))
+        return out
+    # 그보다 크면 긴 쪽을 반으로, 겹치게 자른다
     if h >= w:
         m = y0 + h // 2
         _tiles(gray, (x0, y0, x1, m + OVERLAP // 2), hard[:3] + (True,), out)
@@ -275,8 +289,12 @@ def _join(a: str, b: str) -> str:
     return a + ("" if CJK.match(a[-1:]) and CJK.match(b[:1]) else " ") + b
 
 
-def _blocks(labels: list[dict], W: int, H: int) -> list[dict]:
-    """여러 줄 문단을 줄마다 따로 번역하면 문장이 끊기고 덮개가 겹친다. 바로 아래·비슷한 글자 크기·왼쪽이나 가운데 정렬인 줄은 한 문단으로 합친다. lines는 합친 줄 수."""
+def _blocks(labels: list[dict], W: int, H: int, paragraphs: bool = False) -> list[dict]:
+    """여러 줄 문단을 줄마다 따로 번역하면 문장이 끊기고 덮개가 겹친다. 바로 아래·비슷한 글자 크기·왼쪽이나 가운데 정렬인 줄은 한 문단으로 합친다. lines는 합친 줄 수.
+
+    paragraphs: PDF처럼 문단 사이에 빈 줄 없이 들여쓰기만 있는 글에서, 왼쪽 정렬된 줄이라도 앞 줄이 짧게 끝났거나
+    (문단의 마지막 줄) 이 줄이 들여 써졌으면(문단의 첫 줄) 새 문단으로 본다.
+    """
     px = lambda b: (b[0] * W, b[1] * H, b[2] * W, b[3] * H)  # noqa: E731
     blocks = []
     for lb in sorted(labels, key=lambda lb: (lb["box"][1], lb["box"][0])):
@@ -291,7 +309,10 @@ def _blocks(labels: list[dict], W: int, H: int) -> list[dict]:
             if not (ly1 < y1 and y1 - ly2 < 0.6 * lh and 0.7 < h / lh < 1.4):
                 continue
             bx1, _, bx2, _ = px(bl["box"])
-            aligned = abs(x1 - bx1) < 1.5 * lh or abs((x1 + x2) / 2 - (bx1 + bx2) / 2) < 1.5 * lh
+            left = abs(x1 - bx1) < 1.5 * lh
+            aligned = left or abs((x1 + x2) / 2 - (bx1 + bx2) / 2) < 1.5 * lh
+            if paragraphs and left and (x1 - bx1 > 0.5 * lh or lx2 < bx2 - 3 * lh):
+                break  # 새 문단
             if aligned and min(x2, bx2) > max(x1, bx1):
                 target = bl
                 break
@@ -336,7 +357,7 @@ def read_image(model: str, data: bytes, on_progress) -> list[dict]:
 
 
 
-def run(model: str, data: bytes, on_progress, checkpoint=None) -> tuple[list[dict], int]:
+def run(model: str, data: bytes, on_progress, checkpoint=None, lang: str = "ko") -> tuple[list[dict], int]:
     """(라벨 목록, 실패 라벨 수). checkpoint에 OCR 결과와 번역문을 저장해 실패한 라벨만 다시 번역할 때 OCR을 되풀이하지 않는다."""
     saved = {}
     if checkpoint and checkpoint.exists():
@@ -353,21 +374,29 @@ def run(model: str, data: bytes, on_progress, checkpoint=None) -> tuple[list[dic
     if not labels:
         raise translator.PeparError("이미지에서 글자를 찾지 못했습니다.")
 
-    # 숫자·기호뿐인 라벨은 번역할 게 없으니 원문 그대로 둔다
-    todo = [i for i, lb in enumerate(labels) if "ko" not in lb and translator.WORTH.search(lb["text"])]
+    def save():
+        if checkpoint:
+            checkpoint.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+
+    failed = translate_labels(model, labels, on_progress, lang, "image", save)
+    return labels, failed
+
+
+def translate_labels(model: str, labels: list[dict], on_progress, lang: str, kind: str, save=lambda: None) -> int:
+    """라벨마다 번역문을 "ko" 키에 채운다 (언어와 상관없이 이 키: 예전 결과 파일과 맞추려고). 이미 있는 것은 건너뛴다.
+    숫자·기호뿐인 라벨은 번역할 게 없으니 원문 그대로 둔다. 묶음마다 save()를 부른다. 실패한 라벨 수를 돌려준다."""
+    todo = [i for i, lb in enumerate(labels) if "ko" not in lb and translator.worth(lb["text"], lang)]
     items = [{"text": lb["text"]} for lb in labels]
     context = "\n".join(lb["text"] for lb in labels)[:3000]
-    system = translator.SYSTEM.format(context=context, style=translator.STYLE["image"])
-    total = sum(1 for lb in labels if translator.WORTH.search(lb["text"]))
+    system = translator.system_prompt(context, kind, lang)
+    total = sum(1 for lb in labels if translator.worth(lb["text"], lang))
     done = total - len(todo)
     on_progress("translating", done, total)
     for idxs in translator.batches([items[i] for i in todo]):
         real = [todo[k] for k in idxs]
         for i, t in translator.translate_batch(model, system, items, real).items():
             labels[i]["ko"] = clean(t)
-        if checkpoint:
-            checkpoint.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+        save()
         done += len(real)
         on_progress("translating", done, total)
-    failed = sum(1 for lb in labels if "ko" not in lb and translator.WORTH.search(lb["text"]))
-    return labels, failed
+    return sum(1 for lb in labels if "ko" not in lb and translator.worth(lb["text"], lang))

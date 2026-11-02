@@ -22,6 +22,7 @@ from PIL import Image
 from werkzeug.exceptions import HTTPException
 
 import ocr
+import pdfdoc
 import translator
 from config import settings
 
@@ -30,8 +31,16 @@ CACHE.mkdir(parents=True, exist_ok=True)
 SOURCES = CACHE / "sources.json"  # web key는 해시라 URL을 따로 기록
 IMAGES = CACHE / "images"
 IMAGES.mkdir(exist_ok=True)
-KEY_RE = re.compile(r"^(\d{4}\.\d{4,5}(v\d+)?|[wi]-[0-9a-f]{12})$")
-MODEL_RE = re.compile(r"^[\w.\-]+$")
+TEXTS = CACHE / "texts"  # 붙여넣은 텍스트 t-<hash>.txt
+TEXTS.mkdir(exist_ok=True)
+PDFS = CACHE / "pdfs"  # PDF 원본 <key>.pdf와 쪽 그림 <key>/<n>.png. 올린 PDF(p-)도, PDF였던 웹 주소·arXiv도
+PDFS.mkdir(exist_ok=True)
+STORES = (IMAGES, TEXTS, PDFS)  # 번역 결과가 아닌 원본 저장소
+CUSTOM_LANGS = CACHE / "langs.json"  # 직접 입력한 언어: 코드 → 입력한 글
+KEY_RE = re.compile(r"^(\d{4}\.\d{4,5}(v\d+)?|[witp]-[0-9a-f]{12})$")  # w-웹, i-이미지, t-텍스트, p-올린 PDF
+# URL·캐시 폴더에 쓰는 "모델 칸": 한국어는 모델 이름 그대로(예전 결과와 같은 자리), 다른 언어는 "모델@언어"
+# 직접 입력한 언어는 "모델@x-<해시>" (이름은 cache/langs.json)
+MODEL_RE = re.compile(r"^[\w.\-]+(@([a-z]{2}|x-[0-9a-f]{8}))?$")
 ACTIVE = ("queued", "fetching", "reading", "translating")
 
 
@@ -54,10 +63,14 @@ FAILED_KEEP = 24 * 3600
 sec_per_block = 7.0
 
 
+# <model>은 모델 칸 (gemma4-12b, gemma4-12b@en)
 # cache/<model>/<key>.html        번역 결과
 # cache/<model>/<key>.meta.json   번역 시각·제목·URL·블록 수 등
 # cache/<model>/<key>.partial.json 이어서 번역하기 위한 체크포인트 (이미지는 OCR 결과도)
 # cache/images/<key>.<png|jpg>    업로드한 이미지
+# cache/texts/<key>.txt           붙여넣은 텍스트
+# cache/pdfs/<key>.pdf, <key>/<n>.png  PDF 원본과 쪽 그림
+# cache/<model>/<key>.pages.json  PDF 번역 결과 (쪽마다 문단·번역문). 보기 화면은 이걸로 그린다
 
 
 def load_sources() -> dict:
@@ -81,6 +94,10 @@ def source_for(key: str) -> translator.Source | None:
         return translator.Source("web", key, info["url"]) if info else None
     if key.startswith("i-"):
         return translator.Source("image", key, f"/image/{key}") if image_path(key) else None
+    if key.startswith("t-"):
+        return translator.Source("text", key, f"/text/{key}") if text_path(key).exists() else None
+    if key.startswith("p-"):
+        return translator.Source("pdf", key, f"/pdf/{key}") if pdf_path(key).exists() else None
     return translator.Source("arxiv", key, key)
 
 
@@ -88,7 +105,7 @@ def source_url(key: str) -> str:
     src = source_for(key)
     if not src:
         return ""
-    return src.url if src.kind in ("web", "image") else f"https://arxiv.org/abs/{key}"
+    return src.url if src.kind in ("web", "image", "text", "pdf") else f"https://arxiv.org/abs/{key}"
 
 
 def image_path(key: str) -> Path | None:
@@ -96,8 +113,81 @@ def image_path(key: str) -> Path | None:
     return found[0] if found else None
 
 
+def text_path(key: str) -> Path:
+    return TEXTS / f"{key}.txt"
+
+
+def pdf_path(key: str) -> Path:
+    return PDFS / f"{key}.pdf"
+
+
+def pdf_pages_dir(key: str) -> Path:
+    return PDFS / key
+
+
+def save_pdf(key: str, data: bytes):
+    """PDF 원본을 저장한다. 내용이 바뀌었으면(웹 주소의 PDF가 갱신됨) 예전 쪽 그림을 지운다."""
+    path = pdf_path(key)
+    if path.exists() and path.read_bytes() == data:
+        return
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+    d = pdf_pages_dir(key)
+    if d.exists():
+        for f in d.iterdir():
+            f.unlink()
+
+
 def image_name(key: str) -> str:
     return load_sources().get(key, {}).get("name") or key
+
+
+def split_slot(slot: str) -> tuple[str, str]:
+    """모델 칸 → (모델, 언어)."""
+    model, _, lang = slot.partition("@")
+    return model, lang if lang in translator.LANGS or translator.CUSTOM_RE.match(lang) else translator.DEFAULT_LANG
+
+
+def slot_for(model: str, lang: str) -> str:
+    return model if lang == translator.DEFAULT_LANG else f"{model}@{lang}"
+
+
+def slot_label(slot: str) -> str:
+    """화면에 보일 이름: gemma4-12b · English."""
+    model, lang = split_slot(slot)
+    return model if lang == translator.DEFAULT_LANG else f"{model} · {translator.lang_name(lang)}"
+
+
+def load_custom_langs():
+    try:
+        data = json.loads(CUSTOM_LANGS.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return
+    translator.CUSTOM_LANGS.update({k: v for k, v in data.items() if translator.CUSTOM_RE.match(k) and isinstance(v, str)})
+
+
+def remember_custom_lang(text: str) -> str:
+    """직접 입력한 언어를 기록하고 코드를 돌려준다. 같은 표현이면 같은 코드 (처음 입력한 글자 그대로 보인다)."""
+    text = translator.clean_custom(text)
+    code = translator.custom_code(text)
+    with sources_lock:
+        if code not in translator.CUSTOM_LANGS:
+            translator.CUSTOM_LANGS[code] = text
+            CUSTOM_LANGS.write_text(json.dumps(translator.CUSTOM_LANGS, ensure_ascii=False, indent=1), encoding="utf-8")
+    return code
+
+
+load_custom_langs()
+
+
+def pick_lang(requested: str | None, text: str | None = None) -> str:
+    """lang=other면 text(직접 입력한 언어)를 기록하고 그 코드를. PeparError는 입력이 비었을 때."""
+    if requested == "other":
+        return remember_custom_lang(text or "")
+    if requested and requested not in translator.LANGS:
+        abort(400)
+    return requested or translator.DEFAULT_LANG
 
 
 def model_dir(model: str) -> Path:
@@ -109,7 +199,7 @@ def model_dir(model: str) -> Path:
 def cached_path(model: str, key: str) -> Path | None:
     """arXiv는 버전 지정 시 그 버전, 아니면 캐시된 것 중 최신 버전."""
     d = CACHE / model
-    if key.startswith(("w-", "i-")) or "v" in key:
+    if key.startswith(("w-", "i-", "t-", "p-")) or "v" in key:
         p = d / f"{key}.html"
         return p if p.exists() else None
     found = sorted(d.glob(f"{key}v*.html"), key=lambda p: int(p.stem.split("v")[-1]))
@@ -118,6 +208,27 @@ def cached_path(model: str, key: str) -> Path | None:
 
 def checkpoint_path(model: str, key: str) -> Path:
     return model_dir(model) / f"{key}.partial.json"
+
+
+def where_of(key: str, url: str) -> str:
+    if key.startswith("i-"):
+        return "이미지"
+    if key.startswith("t-"):
+        return "텍스트"
+    if key.startswith("p-"):
+        return "PDF"
+    if key.startswith("w-"):
+        return urlparse(url).hostname or "web"
+    return "arXiv"
+
+
+def kind_of(key: str, pdf: bool = False) -> str:
+    """목록에서 나누는 종류: doc(웹·arXiv), pdf, image, text. PDF였던 웹 주소·arXiv도 pdf."""
+    if key.startswith("i-"):
+        return "image"
+    if key.startswith("t-"):
+        return "text"
+    return "pdf" if pdf or key.startswith("p-") else "doc"
 
 
 def doc_info(p: Path, sources: dict) -> dict:
@@ -133,12 +244,18 @@ def doc_info(p: Path, sources: dict) -> dict:
     url = meta.get("url") or (
         sources.get(key, {}).get("url", "") if key.startswith("w-") else f"https://arxiv.org/abs/{key}"
     )
+    llm, lang = split_slot(model)
     return {
+        "kind": kind_of(key, (p.parent / f"{key}.pages.json").exists()),
         "model": model,
+        "llm": llm,
+        "lang": lang,
+        "lang_name": translator.lang_name(lang),
+        "custom_lang": lang not in translator.LANGS,
         "key": key,
         "title": title,
         "url": url,
-        "where": "이미지" if key.startswith("i-") else "arXiv" if not key.startswith("w-") else (urlparse(url).hostname or "web"),
+        "where": where_of(key, url),
         "translated_at": meta.get("translated_at") or datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds"),
         "blocks": meta.get("blocks"),
         "failed": meta.get("failed"),
@@ -172,8 +289,9 @@ def worker():
         job = work.get()
         if job.get("cancel"):
             continue
-        model, key = job["model"], job["key"]
-        llm = job.get("llm") or model
+        model, key = job["model"], job["key"]  # model은 모델 칸
+        base, lang = split_slot(model)
+        llm = job.get("llm") or base
 
         def progress(stage, done, total, **info):
             if job.get("cancel"):
@@ -184,6 +302,8 @@ def worker():
                 job["resumed"] = done  # 체크포인트에서 이어받은 블록 수
 
         try:
+            if not translator.is_lang(lang):
+                raise translator.PeparError("직접 입력한 언어 기록(langs.json)을 찾을 수 없습니다. 첫 화면에서 언어를 다시 입력해 주세요.")
             src = source_for(key)
             if src is None:
                 raise translator.PeparError("원본 URL 기록을 찾을 수 없습니다. 첫 화면에서 다시 입력해 주세요.")
@@ -193,12 +313,24 @@ def worker():
             if src.kind == "image":
                 resolved, title = key, image_name(key)
                 job["title"] = title
-                html, failed = translate_image(model, key, title, progress, checkpoint, retry_url, llm)
+                html, failed = translate_image(model, key, title, progress, checkpoint, retry_url, llm, lang)
+            elif src.kind == "pdf":
+                resolved, title = key, image_name(key)
+                job["title"] = title
+                html, failed = translate_pdf(model, key, title, progress, checkpoint, llm, lang)
             else:
-                resolved, title, html, failed = translator.run(
-                    src, llm, progress, checkpoint=checkpoint, retry_url=retry_url,
-                    label=model if llm == model else f"{model} + {llm}",
-                )
+                label = slot_label(model) if llm == base else f"{slot_label(model)} + {llm}"
+                text = text_path(key).read_text(encoding="utf-8") if src.kind == "text" else None
+                try:
+                    resolved, title, html, failed = translator.run(
+                        src, llm, progress, checkpoint=checkpoint, retry_url=retry_url, label=label, lang=lang, text=text,
+                    )
+                except translator.PdfFound as found:  # 웹 주소가 PDF였거나, HTML 버전이 없는 arXiv 논문
+                    pdfdoc.check(found.data)
+                    save_pdf(key, found.data)
+                    resolved, title = key, pdfdoc.title(pdf_path(key)) or found.url.rsplit("/", 1)[-1] or key
+                    job.update(title=title, kind="pdf")
+                    html, failed = translate_pdf(model, key, title, progress, checkpoint, llm, lang)
             out = model_dir(model) / f"{resolved}.html"
             out.write_text(html, encoding="utf-8")
             out.with_suffix(".meta.json").write_text(
@@ -236,10 +368,10 @@ def worker():
         save_failed()
 
 
-def translate_image(model, key, title, progress, checkpoint, retry_url, llm) -> tuple[str, int]:
+def translate_image(model, key, title, progress, checkpoint, retry_url, llm, lang) -> tuple[str, int]:
     """라벨은 <key>.labels.json에도 저장한다 (보기 화면은 매번 최신 템플릿으로 그림)."""
     path = image_path(key)
-    labels, failed = ocr.run(llm, path.read_bytes(), progress, checkpoint=checkpoint)
+    labels, failed = ocr.run(llm, path.read_bytes(), progress, checkpoint=checkpoint, lang=lang)
     with Image.open(path) as img:
         width, height = img.size
     data = {"title": title, "labels": labels, "failed": failed, "width": width, "height": height}
@@ -248,8 +380,31 @@ def translate_image(model, key, title, progress, checkpoint, retry_url, llm) -> 
         return render_image(model, key, data), failed
 
 
+def translate_pdf(model, key, title, progress, checkpoint, llm, lang) -> tuple[str, int]:
+    """쪽마다 문단·번역문은 <key>.pages.json에도 저장한다 (보기 화면은 매번 최신 템플릿으로 그림)."""
+    pages, failed = pdfdoc.run(llm, pdf_path(key), pdf_pages_dir(key), progress, checkpoint=checkpoint, lang=lang)
+    data = {"title": title, "pages": pages, "failed": failed}
+    (model_dir(model) / f"{key}.pages.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    with app.app_context():
+        return render_pdf(model, key, data), failed
+
+
+def render_overlay(model: str, key: str, title: str, pages: list[dict], failed: int, source_href: str, source_label: str) -> str:
+    """원본 그림 위에 번역문을 덮는 보기 화면. pages: [{src, width, height, labels, error?}] (이미지는 한 쪽)."""
+    return render_template(
+        "image_view.html", model=slot_label(model), lang=split_slot(model)[1], key=key, title=title, pages=pages,
+        failed=failed, retry_url=f"/view/{model}/{key}?retry_failed=1", source_href=source_href, source_label=source_label,
+    )
+
+
 def render_image(model: str, key: str, data: dict) -> str:
-    return render_template("image_view.html", model=model, key=key, retry_url=f"/view/{model}/{key}?retry_failed=1", **data)
+    page = {"src": f"/image/{key}", "width": data["width"], "height": data["height"], "labels": data["labels"]}
+    return render_overlay(model, key, data["title"], [page], data["failed"], f"/image/{key}", "원본 이미지")
+
+
+def render_pdf(model: str, key: str, data: dict) -> str:
+    pages = [{**pg, "src": f"/pdf/{key}/{n}.png"} for n, pg in enumerate(data["pages"], 1)]
+    return render_overlay(model, key, data["title"], pages, data["failed"], f"/pdf/{key}", "원본 PDF")
 
 
 def save_failed():
@@ -292,8 +447,12 @@ def start_job(model: str, key: str, llm: str | None = None):
             "message": "",
             "queued_at": time.time(),
         }
-        if llm and llm != model:
-            job["llm"] = llm
+        base, lang = split_slot(model)
+        job["llm"] = llm or base  # 실제로 번역할 모델 (실패분 재번역은 다른 모델일 수 있다)
+        job["lang"] = lang
+        job["lang_name"] = translator.lang_name(lang)
+        job["custom_lang"] = lang not in translator.LANGS
+        job["kind"] = kind_of(key, (CACHE / model / f"{key}.pages.json").exists())
         work.put(job)
 
 
@@ -512,20 +671,24 @@ def http_error(e: HTTPException):
 @app.get("/")
 def index():
     models, models_error = get_models()
-    return render_template("index.html", models=models, models_error=models_error, default_model=translator.pick_default_model(models), auth=bool(PASSWORD))
+    return render_template(
+        "index.html", models=models, models_error=models_error, default_model=translator.pick_default_model(models),
+        langs=translator.LANGS, default_lang=translator.DEFAULT_LANG, text_max=translator.TEXT_MAX, auth=bool(PASSWORD),
+    )
 
 
 @app.get("/open")
 def open_link():
     try:
         model = pick_model(request.args.get("model"))
-        if not MODEL_RE.match(model):
+        if not MODEL_RE.match(model) or "@" in model:
             abort(400)
-        src = translator.parse_source(request.args.get("url", ""))
+        lang = pick_lang(request.args.get("lang"), request.args.get("lang_text"))
+        src = translator.parse_source(request.args.get("url") or request.args.get("pdf_url", ""))  # pdf_url: PDF 탭의 링크 칸
     except translator.PeparError as e:
         return render_template("progress.html", error=str(e), model="", key="", src_url=""), 400
     remember_source(src)
-    return redirect(url_for("view", model=model, key=src.key))
+    return redirect(url_for("view", model=slot_for(model, lang), key=src.key))
 
 
 @app.post("/upload")
@@ -539,12 +702,29 @@ def upload():
         model = pick_model(request.form.get("model"))
     except translator.PeparError as e:
         return fail(str(e))
-    if not MODEL_RE.match(model):
+    if not MODEL_RE.match(model) or "@" in model:
         abort(400)
-    f = request.files.get("image")
+    try:
+        lang = pick_lang(request.form.get("lang"), request.form.get("lang_text"))
+    except translator.PeparError as e:
+        return fail(str(e))
+    f = request.files.get("pdf") or request.files.get("image")  # PDF 탭이면 pdf, 이미지 탭이면 image
 
     if not f or not f.filename:
-        return fail("이미지 파일을 골라 주세요.")
+        return fail("이미지나 PDF 파일을 골라 주세요.")
+    data = f.read(MAX_UPLOAD_READ)
+    if data.startswith(b"%PDF-"):
+        if len(data) >= MAX_UPLOAD_READ:
+            return fail(f"PDF가 너무 큽니다 (최대 {MAX_UPLOAD_READ // 1024 // 1024}MB).")
+        # 글자 레이어가 있으면 비전 모델이 아니어도 된다 (스캔 쪽만 OCR)
+        try:
+            pdfdoc.check(data)
+        except translator.PeparError as e:
+            return fail(str(e))
+        key = pdfdoc.pdf_key(data)
+        save_pdf(key, data)
+        remember_upload(key, "pdf", f"/pdf/{key}", f.filename)
+        return redirect(url_for("view", model=slot_for(model, lang), key=key))
     try:
         models = {m["id"]: m for m in translator.list_models()}
     except Exception:  # noqa: BLE001 - 목록 없이 진행
@@ -553,20 +733,76 @@ def upload():
         vision = ", ".join(m for m in models if models[m]["vision"])
         return fail(f"{model}은(는) 이미지를 읽지 못하는 모델입니다. 이미지를 지원하는 모델: {vision}")
     try:
-        data, ext, _, _ = ocr.normalize(f.read(MAX_UPLOAD_READ))
+        data, ext, _, _ = ocr.normalize(data)
     except translator.PeparError as e:
         return fail(str(e))
     key = ocr.image_key(data)
     if not image_path(key):
         (IMAGES / f"{key}.{ext}").write_bytes(data)
+    remember_upload(key, "image", f"/image/{key}", f.filename)
+    return redirect(url_for("view", model=slot_for(model, lang), key=key))
+
+
+def remember_upload(key: str, kind: str, url: str, filename: str):
     with sources_lock:
         sources = load_sources()
-        sources[key] = {"kind": "image", "url": f"/image/{key}", "name": Path(f.filename).name[:200]}
+        sources[key] = {"kind": kind, "url": url, "name": Path(filename).name[:200]}
         SOURCES.write_text(json.dumps(sources, ensure_ascii=False, indent=1), encoding="utf-8")
-    return redirect(url_for("view", model=model, key=key))
 
 
-MAX_UPLOAD_READ = ocr.MAX_UPLOAD + 1  # 한도 초과를 알 수 있도록 1바이트 더 읽는다
+MAX_UPLOAD_READ = 30 * 1024 * 1024 + 1  # PDF 한도 30MB (이미지는 ocr.normalize가 따로 막는다). 초과를 알 수 있게 1바이트 더
+
+
+@app.get("/pdf/<key>")
+def pdf_file(key):
+    if not KEY_RE.match(key) or not pdf_path(key).exists():
+        abort(404)
+    return send_file(pdf_path(key), mimetype="application/pdf", max_age=86400)
+
+
+@app.get("/pdf/<key>/<int:n>.png")
+def pdf_page(key, n):
+    path = pdf_pages_dir(key) / f"{n}.png"
+    if not KEY_RE.match(key) or not path.exists():
+        abort(404)
+    return send_file(path, max_age=86400)
+
+
+@app.post("/text")
+def paste_text():
+    """붙여넣은 텍스트를 저장하고 번역 화면으로. 같은 글은 같은 key라 캐시를 다시 쓴다."""
+    def fail(msg):
+        return render_template("progress.html", error=msg, model="", key="", src_url=""), 400
+
+    try:
+        model = pick_model(request.form.get("model"))
+        if not MODEL_RE.match(model) or "@" in model:
+            abort(400)
+        lang = pick_lang(request.form.get("lang"), request.form.get("lang_text"))
+    except translator.PeparError as e:
+        return fail(str(e))
+    text = request.form.get("text", "").replace("\r\n", "\n").strip()
+    if not text:
+        return fail("번역할 텍스트를 입력해 주세요.")
+    if len(text) > translator.TEXT_MAX:
+        return fail(f"텍스트가 너무 깁니다 (최대 {translator.TEXT_MAX:,}자).")
+    key = "t-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    path = text_path(key)
+    if not path.exists():
+        path.write_text(text, encoding="utf-8")
+    with sources_lock:
+        sources = load_sources()
+        first = next(line for line in text.splitlines() if line.strip())
+        sources[key] = {"kind": "text", "url": f"/text/{key}", "name": " ".join(first.split())[:80]}
+        SOURCES.write_text(json.dumps(sources, ensure_ascii=False, indent=1), encoding="utf-8")
+    return redirect(url_for("view", model=slot_for(model, lang), key=key))
+
+
+@app.get("/text/<key>")
+def raw_text(key):
+    if not KEY_RE.match(key) or not key.startswith("t-") or not text_path(key).exists():
+        abort(404)
+    return send_file(text_path(key), mimetype="text/plain; charset=utf-8", max_age=86400)
 
 
 @app.get("/image/<key>")
@@ -592,12 +828,15 @@ def view(model, key):
         return redirect(url_for("view", model=model, key=key))
     if request.args.get("retry_failed") == "1":  # 체크포인트를 두고 다시 돌려 빠진 블록만 번역
         llm = request.args.get("with") or None  # 빠진 블록을 번역할 모델
-        if llm and not MODEL_RE.match(llm):
+        if llm and (not MODEL_RE.match(llm) or "@" in llm):
             abort(400)
         if not active:
             start_job(model, key, llm)
         return redirect(url_for("view", model=model, key=key))
     if not active:
+        pages = CACHE / model / f"{key}.pages.json"
+        if pages.exists():
+            return render_pdf(model, key, json.loads(pages.read_text(encoding="utf-8")))
         labels = CACHE / model / f"{key}.labels.json"
         if key.startswith("i-") and labels.exists():
             return render_image(model, key, json.loads(labels.read_text(encoding="utf-8")))
@@ -605,8 +844,8 @@ def view(model, key):
         if path:
             return path.read_text(encoding="utf-8")
         start_job(model, key)  # 처음이거나 지난번에 실패했으면 이어서 시도
-    title = image_name(key) if key.startswith("i-") else ""
-    return render_template("progress.html", error="", model=model, key=key, src_url=source_url(key), title=title)
+    title = image_name(key) if key.startswith(("i-", "t-", "p-")) else ""
+    return render_template("progress.html", error="", model=model, label=slot_label(model), key=key, src_url=source_url(key), title=title)
 
 
 @app.get("/paper/<key>")
@@ -623,7 +862,7 @@ def old_paper_link(key):
 @app.get("/api/docs")
 def api_docs():
     sources = load_sources()
-    docs = [doc_info(p, sources) for p in CACHE.glob("*/*.html") if p.parent != IMAGES]
+    docs = [doc_info(p, sources) for p in CACHE.glob("*/*.html") if p.parent not in STORES]
     docs.sort(key=lambda d: d["translated_at"], reverse=True)
     return jsonify(docs)
 
@@ -638,7 +877,7 @@ def api_delete_doc(model, key):
         return jsonify(error="번역 중인 문서는 지울 수 없습니다."), 409
     d = CACHE / model
     removed = 0
-    for name in (f"{key}.html", f"{key}.meta.json", f"{key}.partial.json", f"{key}.labels.json"):
+    for name in (f"{key}.html", f"{key}.meta.json", f"{key}.partial.json", f"{key}.labels.json", f"{key}.pages.json"):
         p = d / name
         if p.exists():
             p.unlink()
@@ -647,9 +886,17 @@ def api_delete_doc(model, key):
     jobs.pop(f"{model}/{key}", None)
     if d.exists() and not any(d.iterdir()):
         d.rmdir()
-    others = [p for p in CACHE.glob(f"*/{key}.*") if p.parent != IMAGES]
+    others = [p for p in CACHE.glob(f"*/{key}.*") if p.parent not in STORES]
     if key.startswith("i-") and not others and (p := image_path(key)):
         p.unlink()  # 이 이미지를 번역한 모델이 더 없으면 원본도 지운다
+    if key.startswith("t-") and not others:
+        text_path(key).unlink(missing_ok=True)  # 텍스트도 마찬가지
+    if not others and pdf_path(key).exists():  # PDF도 (올린 것이든, PDF였던 웹 주소든)
+        pdf_path(key).unlink()
+        if pdf_pages_dir(key).exists():
+            for f in pdf_pages_dir(key).iterdir():
+                f.unlink()
+            pdf_pages_dir(key).rmdir()
     if not removed:
         return jsonify(error="문서를 찾지 못했습니다."), 404
     return jsonify(ok=True)

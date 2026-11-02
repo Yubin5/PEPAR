@@ -66,6 +66,10 @@
   .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px 24px; flex-wrap: wrap; margin-bottom: 24px; }
   .top .sub { margin: 0; }
   .model select { max-width: 100%; }
+  .pickers { display: flex; gap: 8px 16px; flex-wrap: wrap; align-items: center; }
+  .pickers input.lang-text { flex: none; width: 15em; padding: 8px 10px; }
+  .lang-warn { color: var(--err); font-weight: 600; font-size: 14px; margin: -12px 0 16px; }
+  .tag.custom-lang { color: var(--err); border-color: color-mix(in srgb, var(--err) 60%, transparent); }
   .logout { font-size: 13px; color: var(--muted); }
 
   .tabs, .chips { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -77,7 +81,11 @@
   .chips { margin: 0 0 10px; }
   .chips .n { opacity: .7; margin-left: 4px; font-variant-numeric: tabular-nums; }
 
-  .kind-doc { --k: #2e8b57; } .kind-image { --k: #8e44ad; }
+  .kind-doc { --k: #2e8b57; } .kind-image { --k: #8e44ad; } .kind-text { --k: #c27c0e; } .kind-pdf { --k: #c0392b; }
+  textarea { width: 100%; min-height: 160px; padding: 12px 14px; font: inherit; line-height: 1.6; resize: vertical;
+    border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  .text-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
+  .text-actions .count { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
   .tag.kind { color: color-mix(in srgb, var(--k) 70%, var(--fg)); border-color: color-mix(in srgb, var(--k) 45%, transparent);
     background: color-mix(in srgb, var(--k) 10%, transparent); }
   .thumb { flex: none; width: 56px; height: 56px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); background: var(--line); }
@@ -90,21 +98,36 @@
 <main>
   <header class="top">
     <h1>PEPAR</h1>
-    <label class="model">모델
-      <select name="model" id="model" form="form">
-        {% for m in models %}
-        <option value="{{ m.id }}" data-vision="{{ 1 if m.vision else '' }}" {% if m.id == default_model %}selected{% endif %}>{{ m.id }}{% if m.loaded %} · 로드됨{% endif %}{% if m.vision %} · 이미지{% endif %}</option>
-        {% endfor %}
-      </select>
+    <div class="pickers">
+      <label class="model">번역할 언어
+        <select name="lang" id="lang" form="form">
+          {% for code, names in langs.items() %}
+          <option value="{{ code }}" {% if code == default_lang %}selected{% endif %}>{{ names[0] }}</option>
+          {% endfor %}
+          <option value="other">기타 (직접 입력)</option>
+        </select>
+      </label>
+      <input class="lang-text" name="lang_text" id="lang-text" form="form" maxlength="40" hidden
+        placeholder="예: 베트남어, Thai, 경상도 사투리" aria-label="번역할 언어 직접 입력">
+      <label class="model">모델
+        <select name="model" id="model" form="form">
+          {% for m in models %}
+          <option value="{{ m.id }}" data-vision="{{ 1 if m.vision else '' }}" {% if m.id == default_model %}selected{% endif %}>{{ m.id }}{% if m.loaded %} · 로드됨{% endif %}{% if m.vision %} · 이미지{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
       {% if auth %}<a class="logout" href="/logout">로그아웃</a>{% endif %}
-    </label>
+    </div>
   </header>
+  <p class="lang-warn" id="lang-warn" role="note" hidden>⚠ 직접 입력한 언어는 지원이 불안정합니다. 모델이 언어를 잘못 알아듣거나, 번역이 섞이거나, 번역에 실패할 수 있습니다.</p>
   {% if models_error %}<p class="hint warn" style="margin:-12px 0 16px">{{ models_error }}</p>{% endif %}
 
   <div class="card">
     <div class="tabs" role="tablist" aria-label="번역할 대상">
       <button type="button" role="tab" id="tab-url" data-tab="url" aria-selected="true">문서</button>
+      <button type="button" role="tab" id="tab-pdf" data-tab="pdf" aria-selected="false">PDF</button>
       <button type="button" role="tab" id="tab-image" data-tab="image" aria-selected="false">이미지</button>
+      <button type="button" role="tab" id="tab-text" data-tab="text" aria-selected="false">텍스트</button>
     </div>
     <form action="/open" method="get" id="form">
       <div id="panel-url">
@@ -112,6 +135,19 @@
           <input name="url" required autofocus placeholder="URL">
           <button type="submit">번역</button>
         </div>
+      </div>
+      <div id="panel-pdf" hidden>
+        <div class="row">
+          <label class="file" id="drop-pdf"><input type="file" name="pdf" id="pdf" accept="application/pdf,.pdf">
+            <span id="pdf-label">PDF 선택 · 끌어놓기</span></label>
+          <button type="submit" id="pdf-submit" formaction="/upload" formmethod="post"
+            formenctype="multipart/form-data" formnovalidate>PDF 번역</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <input name="pdf_url" id="pdf-url" placeholder="또는 PDF 링크 (PDF.js·Google 문서 뷰어 링크도 됩니다)">
+          <button type="submit" class="secondary" id="pdf-url-submit" formnovalidate>링크 번역</button>
+        </div>
+        <p class="hint">글자를 고를 수 있는 PDF는 어떤 모델로도 됩니다. 스캔본 쪽은 「· 이미지」가 붙은 모델이 필요합니다.</p>
       </div>
       <div id="panel-image" hidden>
         <div class="row">
@@ -121,6 +157,13 @@
             formenctype="multipart/form-data" formnovalidate>이미지 번역</button>
         </div>
         <p class="hint warn" id="vision-warn" hidden>이 모델은 이미지를 읽지 못합니다. 「· 이미지」가 붙은 모델을 고르세요.</p>
+      </div>
+      <div id="panel-text" hidden>
+        <textarea name="text" id="text" maxlength="{{ text_max }}" placeholder="번역할 글을 붙여넣으세요. 빈 줄로 문단을 나눕니다."></textarea>
+        <div class="text-actions">
+          <span class="count" id="text-count"></span>
+          <button type="submit" id="text-submit" formaction="/text" formmethod="post" formnovalidate>텍스트 번역</button>
+        </div>
       </div>
     </form>
   </div>
@@ -134,7 +177,9 @@
     <h2>번역한 문서 <span class="count" id="docs-count"></span></h2>
     <div class="chips" id="kind-filter" role="group" aria-label="표시할 종류">
       <button type="button" data-kind="doc" aria-pressed="true">문서<span class="n"></span></button>
+      <button type="button" data-kind="pdf" aria-pressed="true">PDF<span class="n"></span></button>
       <button type="button" data-kind="image" aria-pressed="true">이미지<span class="n"></span></button>
+      <button type="button" data-kind="text" aria-pressed="true">텍스트<span class="n"></span></button>
     </div>
     <input id="search" type="search" placeholder="검색">
     <ul id="docs"></ul>
@@ -169,40 +214,101 @@
     if (last && [...sel.options].some(o => o.value === last)) sel.value = last;
   } catch {}
   sel.addEventListener('change', () => { try { localStorage.setItem('pepar-model', sel.value); } catch {} });
+  // 번역할 언어도 브라우저별로 기억
+  const langSel = document.getElementById('lang');
+  try {
+    const last = localStorage.getItem('pepar-lang');
+    if (last && [...langSel.options].some(o => o.value === last)) langSel.value = last;
+  } catch {}
+  langSel.addEventListener('change', () => { try { localStorage.setItem('pepar-lang', langSel.value); } catch {} });
+  // 기타 (직접 입력): 입력칸과 빨간 경고를 보인다. 입력한 글도 기억
+  const langText = document.getElementById('lang-text');
+  try { langText.value = localStorage.getItem('pepar-lang-text') || ''; } catch {}
+  langText.addEventListener('input', () => { try { localStorage.setItem('pepar-lang-text', langText.value); } catch {} });
+  const showCustom = () => {
+    const custom = langSel.value === 'other';
+    langText.hidden = !custom;
+    langText.disabled = !custom;  // 다른 언어를 고르면 보내지 않는다
+    document.getElementById('lang-warn').hidden = !custom;
+  };
+  langSel.addEventListener('change', () => { showCustom(); if (langSel.value === 'other') langText.focus(); });
+  showCustom();
+  const DEFAULT_LANG = {{ default_lang|tojson }};
+  // 모델 칸: 한국어는 모델 이름 그대로, 다른 언어는 "모델@언어" (서버의 slot_for와 같다)
+  const slotOf = (model, lang) => lang === DEFAULT_LANG ? model : `${model}@${lang}`;
+  const langTag = (lang, name, custom) => lang && lang !== DEFAULT_LANG
+    ? el('span', { className: custom ? 'tag custom-lang' : 'tag', textContent: name, title: custom ? '직접 입력한 언어 (지원 불안정)' : '' })
+    : null;
 
   const $ = id => document.getElementById(id);
 
   const setTab = name => {
     for (const b of document.querySelectorAll('.tabs [data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
     $('panel-url').hidden = name !== 'url';
+    $('panel-pdf').hidden = name !== 'pdf';
     $('panel-image').hidden = name !== 'image';
+    $('panel-text').hidden = name !== 'text';
     updateVisionWarn();
     try { localStorage.setItem('pepar-tab', name); } catch {}
   };
   const updateVisionWarn = () => { $('vision-warn').hidden = !!sel.selectedOptions[0]?.dataset.vision || !sel.options.length; };
   for (const b of document.querySelectorAll('.tabs [data-tab]')) b.addEventListener('click', () => setTab(b.dataset.tab));
   sel.addEventListener('change', updateVisionWarn);
-  try { if (localStorage.getItem('pepar-tab') === 'image') setTab('image'); } catch {}
+  try { const t = localStorage.getItem('pepar-tab'); if (['pdf', 'image', 'text'].includes(t)) setTab(t); } catch {}
 
-  const fileInput = $('image');
+  // 텍스트: 글자 수 표시, 입력 중인 글은 브라우저에 임시 저장
+  const textArea = $('text');
+  const TEXT_MAX = {{ text_max }};
+  const showCount = () => {
+    const n = textArea.value.length;
+    $('text-count').textContent = n ? `${n.toLocaleString()} / ${TEXT_MAX.toLocaleString()}자` : '';
+  };
+  try { textArea.value = localStorage.getItem('pepar-text-draft') || ''; } catch {}
+  textArea.addEventListener('input', () => { showCount(); try { localStorage.setItem('pepar-text-draft', textArea.value); } catch {} });
+  showCount();
+
+  const fileInput = $('image'), pdfInput = $('pdf');
+  const isPdf = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
   const showFile = () => {
     const f = fileInput.files[0];
     $('file-label').textContent = f ? f.name : '이미지 선택 · 끌어놓기 · 붙여넣기';
   };
-  const setFile = f => {
-    if (!f || !f.type.startsWith('image/')) return false;
+  const showPdf = () => {
+    const f = pdfInput.files[0];
+    $('pdf-label').textContent = f ? f.name : 'PDF 선택 · 끌어놓기';
+  };
+  const put = (input, f) => {
     const dt = new DataTransfer();
     dt.items.add(f);
-    fileInput.files = dt.files;
+    input.files = dt.files;
+  };
+  // 끌어놓거나 붙여넣은 파일: 종류에 맞는 탭으로 보낸다 (이미지 탭에 PDF를 놓으면 PDF 탭으로)
+  const setFile = f => {
+    if (!f) return false;
+    if (isPdf(f)) { put(pdfInput, f); setTab('pdf'); showPdf(); return true; }
+    if (!f.type.startsWith('image/')) return false;
+    put(fileInput, f);
     setTab('image');
     showFile();
     return true;
   };
   fileInput.addEventListener('change', showFile);
-  const drop = $('drop');
-  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
-  drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
-  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); setFile(e.dataTransfer.files[0]); });
+  pdfInput.addEventListener('change', showPdf);
+  for (const drop of [$('drop'), $('drop-pdf')]) {
+    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+    drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); setFile(e.dataTransfer.files[0]); });
+  }
+  $('pdf-submit').addEventListener('click', e => {
+    if (!pdfInput.files.length) { e.preventDefault(); pdfInput.click(); }
+  });
+  $('pdf-url-submit').addEventListener('click', e => {
+    if (!$('pdf-url').value.trim()) { e.preventDefault(); $('pdf-url').focus(); }
+  });
+  // PDF 링크 칸에서 Enter: 폼의 기본 버튼(문서 탭의 번역)이 아니라 링크 번역으로
+  $('pdf-url').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); $('pdf-url-submit').click(); }
+  });
   document.addEventListener('paste', e => {
     const f = [...(e.clipboardData?.files || [])].find(f => f.type.startsWith('image/'));
     if (f && setFile(new File([f], f.name && f.name !== 'image.png' ? f.name : `붙여넣은 이미지 ${new Date().toLocaleString()}.png`, { type: f.type }))) e.preventDefault();
@@ -214,7 +320,24 @@
     else if (/-e[24]b$/.test(sel.value) && !confirm(`${sel.value}은(는) 작은 모델이라 글자 위치와 내용이 부정확합니다. gemma4-12b를 권장합니다.\n그래도 ${sel.value}로 번역할까요?`)) e.preventDefault();
   });
   // 주소로 번역할 때는 파일을 같이 보내지 않는다
-  $('form').addEventListener('submit', e => { if (e.submitter?.id !== 'image-submit') fileInput.disabled = true; setTimeout(() => { fileInput.disabled = false; }); });
+  $('form').addEventListener('submit', e => {
+    if (langSel.value === 'other' && !langText.value.trim()) {  // 직접 입력을 골랐는데 비어 있으면 보내지 않는다
+      e.preventDefault();
+      langText.focus();
+      return;
+    }
+    if (e.submitter?.id === 'text-submit' && !textArea.value.trim()) {
+      e.preventDefault();
+      textArea.focus();
+      return;
+    }
+    // 누른 버튼이 있는 탭의 입력만 보낸다 (주소 번역에 긴 텍스트가 주소창으로 실려 가지 않도록)
+    const panel = (e.submitter || $('panel-url')).closest('[id^="panel-"]');
+    const off = [...document.querySelectorAll('[id^="panel-"] input, [id^="panel-"] textarea')]
+      .filter(x => !panel.contains(x) && !x.disabled);
+    off.forEach(x => { x.disabled = true; });
+    setTimeout(() => off.forEach(x => { x.disabled = false; }));
+  });
   const el = (tag, props = {}, ...kids) => {
     const e = document.createElement(tag);
     Object.assign(e, props);
@@ -225,10 +348,12 @@
                  : s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
   const host = u => { try { return new URL(u).hostname; } catch { return u || ''; } };
   // key 접두사 i-는 이미지, 그 외는 문서
-  const kindOf = key => key.startsWith('i-') ? 'image' : 'doc';
-  const KIND_LABEL = { doc: '문서', image: '이미지' };
+  // 종류는 서버가 알려 준다 (PDF였던 웹 주소도 pdf). 모르면 key로 짐작
+  const kindOf = x => x.kind || (x.key.startsWith('i-') ? 'image' : x.key.startsWith('t-') ? 'text' : x.key.startsWith('p-') ? 'pdf' : 'doc');
+  const KIND_LABEL = { doc: '문서', pdf: 'PDF', image: '이미지', text: '텍스트' };
+  const UNIT = { doc: '블록', pdf: '문단', image: '라벨', text: '블록' };  // 번역 단위
   const sourceOf = (key, url) => key.startsWith('w-') ? host(url) : 'arXiv';
-  const kindTag = key => el('span', { className: `tag kind kind-${kindOf(key)}`, textContent: KIND_LABEL[kindOf(key)] });
+  const kindTag = x => el('span', { className: `tag kind kind-${kindOf(x)}`, textContent: KIND_LABEL[kindOf(x)] });
 
   function when(iso) {
     const d = new Date(iso), s = (Date.now() - d) / 1000;
@@ -294,9 +419,10 @@
       return el('li', {},
         el('a', { href, target: '_blank', textContent: j.title || j.url || j.key }),
         el('div', { className: 'meta' },
-          kindTag(j.key),
-          kindOf(j.key) === 'doc' ? el('span', { textContent: sourceOf(j.key, j.url) }) : null,
-          el('span', { className: 'tag', textContent: j.llm || j.model })),
+          kindTag(j),
+          kindOf(j) === 'doc' || (kindOf(j) === 'pdf' && !j.key.startsWith('p-')) ? el('span', { textContent: sourceOf(j.key, j.url) }) : null,
+          el('span', { className: 'tag', textContent: j.llm || j.model }),
+          langTag(j.lang, j.lang_name, j.custom_lang)),
         bar,
         el('div', { className: 'status' }, status));
     }));
@@ -330,7 +456,7 @@
     renderDocs();
   }
 
-  let kinds = new Set(['doc', 'image']);
+  let kinds = new Set(Object.keys(KIND_LABEL));
   try { const s = JSON.parse(localStorage.getItem('pepar-kinds')); if (Array.isArray(s)) kinds = new Set(s.filter(k => k in KIND_LABEL)); } catch {}
   for (const b of document.querySelectorAll('#kind-filter [data-kind]')) b.addEventListener('click', () => {
     kinds.has(b.dataset.kind) ? kinds.delete(b.dataset.kind) : kinds.add(b.dataset.kind);
@@ -343,17 +469,17 @@
     const terms = q.split(/\s+/).filter(Boolean);
     const matched = docs.filter(d => {
       if (!terms.length) return true;
-      const hay = `${d.title} ${d.where} ${KIND_LABEL[kindOf(d.key)]} ${d.model} ${d.url} ${d.key}`.toLowerCase();
+      const hay = `${d.title} ${d.where} ${KIND_LABEL[kindOf(d)]} ${d.model} ${d.lang_name} ${d.url} ${d.key}`.toLowerCase();
       return terms.every(t => hay.includes(t)) || contentHits.has(`${d.model}/${d.key}`);
     });
-    const counts = { doc: 0, image: 0 };
-    for (const d of matched) counts[kindOf(d.key)]++;
+    const counts = { doc: 0, pdf: 0, image: 0, text: 0 };
+    for (const d of matched) counts[kindOf(d)]++;
     for (const b of document.querySelectorAll('#kind-filter [data-kind]')) {
       b.setAttribute('aria-pressed', String(kinds.has(b.dataset.kind)));
       b.querySelector('.n').textContent = counts[b.dataset.kind];
     }
-    const shown = matched.filter(d => kinds.has(kindOf(d.key)));
-    $('docs-count').textContent = terms.length || kinds.size < 2 ? `${shown.length} / ${docs.length}개` : `${docs.length}개`;
+    const shown = matched.filter(d => kinds.has(kindOf(d)));
+    $('docs-count').textContent = terms.length || kinds.size < Object.keys(KIND_LABEL).length ? `${shown.length} / ${docs.length}개` : `${docs.length}개`;
     if (!shown.length) {
       const msg = !docs.length ? '아직 번역한 문서가 없습니다.' : !kinds.size ? '표시할 종류를 하나 이상 켜 주세요.'
                 : terms.length ? '검색 결과가 없습니다.' : '선택한 종류의 번역 결과가 없습니다.';
@@ -362,21 +488,23 @@
     }
     $('docs').replaceChildren(...shown.map(d => {
       const hit = contentHits.get(`${d.model}/${d.key}`);
-      const kind = kindOf(d.key);
+      const kind = kindOf(d);
       const meta = el('div', { className: 'meta' },
-        kindTag(d.key),
-        kind === 'doc' ? el('span', { textContent: d.where }) : null,
-        el('span', { className: 'tag', textContent: d.model }),
+        kindTag(d),
+        kind === 'doc' || (kind === 'pdf' && !d.key.startsWith('p-')) ? el('span', { textContent: d.where }) : null,
+        el('span', { className: 'tag', textContent: d.llm }),
+        langTag(d.lang, d.lang_name, d.custom_lang),
         el('span', { textContent: when(d.translated_at), title: '번역한 시각' }));
-      if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}${kind === 'image' ? '개 라벨' : '블록'}` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
-      if (d.failed) meta.append(el('span', { className: 'warn' }, `실패 ${d.failed}${kind === 'image' ? '라벨' : '블록'} · `,
+      if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}${kind === 'image' ? '개 라벨' : UNIT[kind]}` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
+      if (d.failed) meta.append(el('span', { className: 'warn' }, `실패 ${d.failed}${UNIT[kind]} · `,
         el('a', { href: '#', textContent: '재번역', title: '실패한 항목만 다시 번역', onclick: e => { e.preventDefault(); retranslate(d, true); } })));
       const more = el('button', { className: 'more', type: 'button', textContent: '⋯', title: '더 보기' });
       more.setAttribute('aria-haspopup', 'menu');
       more.setAttribute('aria-expanded', 'false');
       more.addEventListener('click', e => { e.stopPropagation(); openMenu(more, d); });
       return el('li', {},
-        kind === 'image' ? el('img', { className: 'thumb', src: `/image/${encodeURIComponent(d.key)}`, loading: 'lazy', alt: '' }) : null,
+        kind === 'image' ? el('img', { className: 'thumb', src: `/image/${encodeURIComponent(d.key)}`, loading: 'lazy', alt: '' })
+          : kind === 'pdf' ? el('img', { className: 'thumb', src: `/pdf/${encodeURIComponent(d.key)}/1.png`, loading: 'lazy', alt: '', style: 'object-position: top' }) : null,
         el('div', { className: 'body' },
           el('a', { href: docHref(d), target: '_blank' }, highlight(d.title, terms)),
           meta,
@@ -400,7 +528,7 @@
     if (same) return;
     menu = el('div', { className: 'menu', role: 'menu' },
       el('a', { href: docHref(d), target: '_blank', textContent: '열기' }),
-      d.failed ? el('button', { type: 'button', textContent: `실패 ${d.failed}${kindOf(d.key) === 'image' ? '라벨' : '블록'}만 다시 번역`, onclick: () => { closeMenu(); retranslate(d, true); } }) : null,
+      d.failed ? el('button', { type: 'button', textContent: `실패 ${d.failed}${UNIT[kindOf(d)]}만 다시 번역`, onclick: () => { closeMenu(); retranslate(d, true); } }) : null,
       el('button', { type: 'button', textContent: '전체 다시 번역', onclick: () => { closeMenu(); retranslate(d, false); } }),
       el('button', { type: 'button', className: 'danger', textContent: '삭제…', onclick: () => { closeMenu(); confirmDelete(d); } }));
     menu.anchor = anchor;
@@ -418,29 +546,29 @@
 
   function retranslate(d, failedOnly) {
     const dlg = $('retranslate'), pick = $('retranslate-model');
-    const image = kindOf(d.key) === 'image';
-    $('retranslate-title').textContent = failedOnly ? `실패한 ${image ? '라벨' : '블록'}만 다시 번역` : '전체 다시 번역';
+    const image = kindOf(d) === 'image';
+    $('retranslate-title').textContent = failedOnly ? `실패한 ${UNIT[kindOf(d)]}만 다시 번역` : '전체 다시 번역';
     $('retranslate-text').textContent = `“${d.title}”`;
     pick.replaceChildren(...[...sel.options].map(o => {
       const opt = el('option', { value: o.value, textContent: o.textContent });
       opt.disabled = image && !o.dataset.vision;
       return opt;
     }));
-    pick.value = d.model;
+    pick.value = d.llm;
     if (pick.selectedOptions[0]?.disabled) pick.selectedIndex = [...pick.options].findIndex(o => !o.disabled);
     dlg.returnValue = '';
     dlg.onclose = () => {
       if (dlg.returnValue !== 'ok' || !pick.value) return;
       location.href = failedOnly
-        ? docHref(d, '?retry_failed=1' + (pick.value !== d.model ? `&with=${encodeURIComponent(pick.value)}` : ''))
-        : docHref({ model: pick.value, key: d.key }, '?retranslate=1');
+        ? docHref(d, '?retry_failed=1' + (pick.value !== d.llm ? `&with=${encodeURIComponent(pick.value)}` : ''))
+        : docHref({ model: slotOf(pick.value, d.lang), key: d.key }, '?retranslate=1');  // 같은 언어로
     };
     dlg.showModal();
   }
 
   function confirmDelete(d) {
     const dlg = $('confirm-delete');
-    $('confirm-text').textContent = `“${d.title}” (${d.model}) 번역을 삭제합니다. 되돌릴 수 없습니다.`;
+    $('confirm-text').textContent = `“${d.title}” (${d.llm}${d.lang !== DEFAULT_LANG ? ' · ' + d.lang_name : ''}) 번역을 삭제합니다. 되돌릴 수 없습니다.`;
     dlg.returnValue = '';
     dlg.onclose = async () => {
       if (dlg.returnValue !== 'ok') return;

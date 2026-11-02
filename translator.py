@@ -8,7 +8,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import parse_qs, urldefrag, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -47,6 +47,25 @@ class Source:
     url: str  # web이면 원본 URL, arxiv면 논문 ID
 
 
+class PdfFound(Exception):
+    """가져온 문서가 PDF였다. app이 PDF 번역으로 넘긴다."""
+
+    def __init__(self, data: bytes, url: str):
+        super().__init__(url)
+        self.data, self.url = data, url
+
+
+def unwrap_viewer(url: str) -> str:
+    """웹 PDF 뷰어로 감싼 주소면 안쪽 PDF 주소를. PDF.js(viewer.html?file=...), Google Docs·Drive 뷰어(?url=...)."""
+    u = urlparse(url)
+    q = parse_qs(u.query)
+    if u.path.endswith("viewer.html") and q.get("file"):
+        return urljoin(url, q["file"][0])  # PDF.js: file은 뷰어 기준 상대 경로일 수 있다
+    if u.hostname in ("docs.google.com", "drive.google.com") and ("viewer" in u.path or "gview" in u.path) and q.get("url"):
+        return q["url"][0]
+    return url
+
+
 def parse_source(text: str) -> Source:
     text = text.strip()
     if not text:
@@ -65,7 +84,9 @@ def parse_source(text: str) -> Source:
             raise PeparError("arXiv 링크에서 논문 ID를 찾지 못했습니다.")
         arxiv_id = m.group(1) + (m.group(2) or "")
         return Source("arxiv", arxiv_id, arxiv_id)
-    url = urldefrag(text)[0]
+    url = urldefrag(unwrap_viewer(text))[0]
+    if url != urldefrag(text)[0] and not re.match(r"^https?://", url, re.I):
+        raise PeparError("PDF 뷰어 주소에서 PDF 파일 주소를 찾지 못했습니다.")
     return Source("web", "w-" + hashlib.sha1(url.encode()).hexdigest()[:12], url)
 
 
@@ -81,6 +102,7 @@ class Doc:
     context: str
     items: list = field(default_factory=list)
     keep_scripts: bool = False  # web: 사이트 스크립트를 살려 두고 번역은 브라우저에서 다시 입힌다
+    lang: str = "ko"  # 번역할 언어 (LANGS의 코드)
 
 
 ARXIV_BLOCKS = "article.ltx_document p.ltx_p, article.ltx_document .ltx_title, article.ltx_document figcaption"
@@ -120,13 +142,20 @@ def _text(el) -> str:
     return " ".join(el.get_text(" ").split())
 
 
-def load_arxiv(src: Source) -> Doc:
+def load_arxiv(src: Source, lang: str = "ko") -> Doc:
     try:
         r = requests.get(f"https://arxiv.org/html/{src.url}", headers=UA_PEPAR, timeout=60)
     except requests.RequestException as e:
         raise PeparError(f"arXiv에서 논문을 가져오지 못했습니다: {describe_request_error(e)}") from e
     if r.status_code == 404:
-        raise PeparError("이 논문은 arXiv HTML 버전이 없습니다 (LaTeX → HTML 변환 실패 논문). 논문 ID가 맞는지도 확인해 주세요.")
+        # HTML 버전이 없는 논문(LaTeX → HTML 변환 실패)은 PDF로 번역한다
+        try:
+            p = requests.get(f"https://arxiv.org/pdf/{src.url}", headers=UA_PEPAR, timeout=120)
+        except requests.RequestException as e:
+            raise PeparError(f"arXiv에서 논문 PDF를 가져오지 못했습니다: {describe_request_error(e)}") from e
+        if p.status_code == 200 and p.content.startswith(b"%PDF-"):
+            raise PdfFound(p.content, p.url)
+        raise PeparError("arXiv에서 이 논문을 찾지 못했습니다 (HTML·PDF 모두 없음). 논문 ID가 맞는지 확인해 주세요.")
     if r.status_code >= 400:
         raise PeparError(f"arXiv에서 논문을 가져오지 못했습니다 (HTTP {r.status_code}).")
     soup = BeautifulSoup(r.content, "lxml")
@@ -147,7 +176,7 @@ def load_arxiv(src: Source) -> Doc:
     if abstract:
         parts.append("Abstract: " + _text(abstract).removeprefix("Abstract").strip())
 
-    doc = Doc(soup, r.url, resolved, "arxiv", title, "\n".join(parts))
+    doc = Doc(soup, r.url, resolved, "arxiv", title, "\n".join(parts), lang=lang)
     for el in _outermost(soup.select(ARXIV_BLOCKS)):
         if el.find_parent(class_=re.compile(r"ltx_(bibliography|tabular|equation)")):
             continue
@@ -155,7 +184,7 @@ def load_arxiv(src: Source) -> Doc:
     return doc
 
 
-def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"]) -> Doc:
+def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: str = "ko") -> Doc:
     try:
         r = netguard.fetch(src.url, UA_BROWSER, settings["allow_private_urls"])
     except requests.RequestException as e:
@@ -167,8 +196,10 @@ def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"]) -> Doc:
     if r.status_code >= 400:
         raise PeparError(f"페이지를 가져오지 못했습니다 (HTTP {r.status_code}).")
     ctype = r.headers.get("content-type", "")
+    if "pdf" in ctype or r.content.startswith(b"%PDF-"):
+        raise PdfFound(r.content, r.url)
     if "html" not in ctype and "xml" not in ctype:
-        raise PeparError(f"HTML 페이지가 아닙니다 ({ctype.split(';')[0] or '알 수 없는 형식'}). PDF 등은 아직 지원하지 않습니다.")
+        raise PeparError(f"HTML 페이지도 PDF도 아닙니다 ({ctype.split(';')[0] or '알 수 없는 형식'}).")
     soup = BeautifulSoup(r.content, "lxml")
     if not soup.body:
         raise PeparError("페이지 본문이 비어 있습니다.")
@@ -198,7 +229,7 @@ def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"]) -> Doc:
         parts.append("Description: " + desc["content"].strip())
     parts.append("Beginning of the page: " + _text(root)[:1200])
 
-    doc = Doc(soup, base, src.key, "web", title, "\n".join(parts), keep_scripts=keep_scripts)
+    doc = Doc(soup, base, src.key, "web", title, "\n".join(parts), keep_scripts=keep_scripts, lang=lang)
     blocks = root.select(WEB_BLOCKS)
     block_ids = {id(b) for b in blocks}
     # 가장 안쪽 블록만 번역 단위로 쓴다
@@ -218,6 +249,86 @@ def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"]) -> Doc:
             raise PeparError(f"페이지가 너무 깁니다 (번역 블록 {MAX_BLOCKS}개 초과).")
     if not doc.items:
         raise PeparError("번역할 본문을 찾지 못했습니다. 자바스크립트로만 그려지는 페이지일 수 있습니다.")
+    return doc
+
+
+# ---------------------------------------------------------------- 붙여넣은 텍스트
+
+TEXT_MAX = 200_000  # 글자 수
+_BULLET = re.compile(r"^\s*([-*•·▪◦‣]|\d+[.)]|[a-zA-Z][.)])\s")
+_CJK_END = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7a3]")
+TEXT_CSS = """
+  :root { --bg: #fafaf9; --fg: #1c1a17; --muted: #6b6760; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ecebe8; --muted: #9c9890; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.75 system-ui, "Pretendard", "Noto Sans KR", sans-serif; }
+  main.pepar-text { max-width: 760px; margin: 0 auto; padding: 40px 16px 120px; }
+  .para { margin: 0 0 1.1em; } .para p { margin: 0; overflow-wrap: anywhere; }
+"""
+
+
+def _width(line: str) -> int:
+    """글줄의 대략적인 폭. 한중일 문자는 라틴 문자 두 개 폭."""
+    return len(line) + len(_CJK_END.findall(line))
+
+
+def _hard_wrapped(lines: list[str]) -> bool:
+    """PDF 등에서 복사해 일정한 폭에서 끊긴 줄들인지: 마지막 줄 말고는 모두 가장 긴 줄의 75% 이상.
+    시나 주소처럼 길이가 들쭉날쭉한 줄은 아니라고 본다."""
+    widths = [_width(line) for line in lines]
+    top = max(widths)
+    return top >= 30 and all(w >= 0.75 * top for w in widths[:-1])
+
+
+def text_paragraphs(text: str) -> list[list[str]]:
+    """붙여넣은 텍스트 → 문단(빈 줄로 구분)마다 줄 목록. 일정한 폭에서 끊긴 줄은 복사하며 생긴 줄바꿈으로 보고 잇고,
+    목록이나 시·주소처럼 줄마다 의미가 있는 것은 줄을 그대로 둔다."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    paras = []
+    for block in re.split(r"\n\s*\n", text):
+        lines = [" ".join(line.split()) for line in block.split("\n") if line.strip()]
+        if not lines:
+            continue
+        if len(lines) > 1 and (any(_BULLET.match(line) for line in lines) or not _hard_wrapped(lines)):
+            paras.append(lines)
+            continue
+        joined = lines[0]
+        for line in lines[1:]:
+            if joined.endswith("-") and line[:1].islower():
+                joined = joined[:-1] + line  # 줄 끝에서 끊긴 낱말
+            else:
+                joined += ("" if _CJK_END.match(joined[-1]) and _CJK_END.match(line[0]) else " ") + line
+        paras.append([joined])
+    return paras
+
+
+def load_text(src: Source, text: str, lang: str = "ko") -> Doc:
+    if len(text) > TEXT_MAX:
+        raise PeparError(f"텍스트가 너무 깁니다 (최대 {TEXT_MAX:,}자).")
+    paras = text_paragraphs(text)
+    if not paras:
+        raise PeparError("번역할 텍스트가 비어 있습니다.")
+    title = paras[0][0][:80]
+    soup = BeautifulSoup(
+        f"<!doctype html><html><head><title></title><style>{TEXT_CSS}</style></head>"
+        '<body><main class="pepar-text"></main></body></html>',
+        "lxml",
+    )
+    soup.title.string = title
+    main = soup.select_one("main")
+    for lines in paras:
+        div = soup.new_tag("div", attrs={"class": "para"})
+        for line in lines:
+            p = soup.new_tag("p")
+            p.string = line
+            div.append(p)
+        main.append(div)
+    doc = Doc(soup, src.url, src.key, "text", title, "Beginning of the text: " + text[:1200], lang=lang)
+    for p in main.select("p"):
+        _add_item(doc, p, "br", None)
+        if len(doc.items) > MAX_BLOCKS:
+            raise PeparError(f"텍스트가 너무 깁니다 (번역 블록 {MAX_BLOCKS}개 초과).")
+    if not doc.items:
+        raise PeparError("번역할 글자가 없습니다. 이미 번역할 언어로 된 글일 수 있습니다.")
     return doc
 
 
@@ -248,8 +359,10 @@ def _split_at_br(soup, el):
     return units
 
 
-def load(src: Source, keep_scripts: bool = settings["keep_scripts"]) -> Doc:
-    return load_arxiv(src) if src.kind == "arxiv" else load_web(src, keep_scripts)
+def load(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: str = "ko", text: str | None = None) -> Doc:
+    if src.kind == "text":
+        return load_text(src, text or "", lang)
+    return load_arxiv(src, lang) if src.kind == "arxiv" else load_web(src, keep_scripts, lang)
 
 
 
@@ -275,14 +388,70 @@ def protect(el, atomic: str, pairs: str | None) -> tuple[str, list[str], dict[in
     return " ".join(el.get_text().split()), saved, closers
 
 
-# 번역할 가치가 있는지: 토큰을 뺀 텍스트에 한글이 아닌 글자가 2자 이상
-WORTH = re.compile(r"[^\W\d_가-힣ㄱ-ㅎㅏ-ㅣ]{2}")
+# 번역할 언어: 코드 → (화면에 보일 이름, 모델에게 줄 영어 이름)
+LANGS = {
+    "ko": ("한국어", "Korean"),
+    "en": ("English", "English"),
+    "ja": ("日本語", "Japanese"),
+    "zh": ("中文(简体)", "Simplified Chinese"),
+    "es": ("Español", "Spanish"),
+    "fr": ("Français", "French"),
+    "de": ("Deutsch", "German"),
+}
+DEFAULT_LANG = "ko"
+
+# 사용자가 직접 입력한 언어: 코드 "x-<해시 8자리>" → 입력한 글. app이 파일에서 읽어 채운다
+CUSTOM_LANGS: dict[str, str] = {}
+CUSTOM_RE = re.compile(r"^x-[0-9a-f]{8}$")
+CUSTOM_MAX = 40
+
+
+def custom_code(text: str) -> str:
+    """같은 표현이면 대소문자·띄어쓰기가 달라도 같은 코드."""
+    norm = " ".join(text.lower().split())
+    return "x-" + hashlib.sha256(norm.encode()).hexdigest()[:8]
+
+
+def clean_custom(text: str) -> str:
+    """직접 입력한 언어 이름. 제어 문자와 줄바꿈을 없애고 길이를 자른다. 비면 PeparError."""
+    text = " ".join("".join(c for c in text if c.isprintable()).split())[:CUSTOM_MAX]
+    if not text:
+        raise PeparError("번역할 언어를 입력해 주세요.")
+    return text
+
+
+def is_lang(code: str) -> bool:
+    return code in LANGS or code in CUSTOM_LANGS
+
+
+def lang_name(code: str) -> str:
+    """화면에 보일 이름."""
+    if code in LANGS:
+        return LANGS[code][0]
+    return CUSTOM_LANGS.get(code, code)
+
+# 번역할 가치가 있는지: 토큰을 뺀 텍스트에 번역할 언어의 문자가 아닌 글자가 2자 이상.
+# 라틴 문자 언어끼리는 문자로 구별할 수 없어서 글자가 있으면 모두 보낸다 (이미 그 언어면 모델이 그대로 돌려준다)
+# 일본어는 가나만 자기 문자로 본다. 한자만 있는 글은 중국어일 수도 있어서 보낸다 (가나가 섞여 있으면 일본어로 본다)
+KANA = "\u3040-\u30ff"
+HANZI = "\u3400-\u9fff"
+_OWN_SCRIPT = {"ko": "가-힣ㄱ-ㅎㅏ-ㅣ", "ja": KANA, "zh": HANZI}
+# 글자 수는 이어져 있지 않아도 센다 ("1달 전"처럼 한 음절씩 띄어 쓴 한국어도 번역하도록)
+_WORTH = {lang: re.compile(rf"[^\W\d_{_OWN_SCRIPT.get(lang, '')}]") for lang in LANGS}
+_WORTH_ANY = re.compile(r"[^\W\d_]")  # 직접 입력한 언어: 어떤 문자가 그 언어인지 모르니 글자가 있으면 보낸다
+_WORTH_JA_TEXT = re.compile(rf"[^\W\d_{KANA}{HANZI}]")  # 가나가 있는 글: 한자도 일본어
+_HAS_KANA = re.compile(rf"[{KANA}]")
+
+
+def worth(text: str, lang: str = "ko") -> bool:
+    pat = _WORTH_JA_TEXT if lang == "ja" and _HAS_KANA.search(text) else _WORTH.get(lang, _WORTH_ANY)
+    return len(pat.findall(text)) >= 2
 
 
 def _add_item(doc: Doc, el, atomic: str, pairs: str | None):
     orig = el.decode_contents()
     text, saved, closers = protect(el, atomic, pairs)
-    if not WORTH.search(TOKEN.sub("", text)):
+    if not worth(TOKEN.sub("", text), doc.lang):
         el.clear()
         el.append(BeautifulSoup(orig, "html.parser"))
         return
@@ -302,27 +471,68 @@ def batches(items):
 
 
 
-SYSTEM = """You are a professional translator into Korean.
+SYSTEM = """You are a professional translator into {lang}.
 
 Document context (use it for consistent terminology only; do not translate it):
 {context}
 
 Rules:
-1. Translate each item's "text" into natural Korean. {style}
-2. Self-closing tags like <x0/>, <x1/> stand for formulas, citations, code, images or other elements that must be kept. Copy every such tag exactly once and unchanged, placed where it fits Korean grammar.
-3. A tag pair <t0>...</t0> marks a link or emphasis. Keep both tags and put them around the Korean words that correspond to the original span.
+1. Translate each item's "text" into natural {lang}. {style}
+2. Self-closing tags like <x0/>, <x1/> stand for formulas, citations, code, images or other elements that must be kept. Copy every such tag exactly once and unchanged, placed where it fits {lang} grammar.
+3. A tag pair <t0>...</t0> marks a link or emphasis. Keep both tags and put them around the {lang} words that correspond to the original span.
 4. Never add, drop or renumber tags.
 5. Keep product/model/method names, acronyms, dataset and metric names, code identifiers in their original form. A technical term may be translated with the original in parentheses the first time it appears in an item.
-6. Output ONLY a JSON array of objects {{"id": <same id>, "text": "<Korean>"}} covering every input id. No commentary."""
+6. If an item is already in {lang}, return it unchanged.
+7. Output ONLY a JSON array of objects {{"id": <same id>, "text": "<{lang}>"}} covering every input id. No commentary."""
 
+# 문체 지시. 언어별로 따로 정한 것이 없으면 "*"를 쓴다. 이미지의 예시 낱말은 언어마다 다르다
 STYLE = {
-    "arxiv": "This is an academic paper: use the written plain style (~한다, ~이다), not 합니다체.",
-    "web": "Use the written plain style (~한다, ~이다) for prose; translate short UI labels and headings concisely.",
-    "image": "These are text labels read from an image (a diagram, figure, screenshot, sign or photo). Each Korean label is "
-    "drawn over the original in the same box, so keep it about as short as the original; use noun phrases for labels. "
-    "Unlike rule 5, translate common technical terms into Korean (e.g. 'hidden state' → '은닉 상태', 'Input Encoder' → "
-    "'입력 인코더') and do not add the original in parentheses; keep only proper names, acronyms, symbols and code as they are.",
+    "ko": {
+        "pdf": "This is a PDF document (often a paper or report). Each item is a paragraph, heading or label drawn over the "
+        "original in its box: use the written plain style (~한다, ~이다) for prose and translate headings and labels concisely.",
+        "arxiv": "This is an academic paper: use the written plain style (~한다, ~이다), not 합니다체.",
+        "web": "Use the written plain style (~한다, ~이다) for prose; translate short UI labels and headings concisely.",
+    },
+    "ja": {
+        "arxiv": "This is an academic paper: use the written plain style (である調), not です・ます調.",
+    },
+    "*": {
+        "pdf": "This is a PDF document (often a paper or report). Each item is a paragraph, heading or label drawn over the "
+        "original in its box: use a formal written register for prose and translate headings and labels concisely.",
+        "text": "This is plain text pasted by the user. Keep its tone and register (formal or casual, polite or plain) "
+        "and keep list markers and numbering.",
+        "arxiv": "This is an academic paper: use a formal academic register.",
+        "web": "Use natural written prose; translate short UI labels and headings concisely.",
+    },
 }
+IMAGE_EXAMPLES = {
+    "ko": "'hidden state' → '은닉 상태', 'Input Encoder' → '입력 인코더'",
+    "ja": "'hidden state' → '隠れ状態', 'Input Encoder' → '入力エンコーダ'",
+    "zh": "'hidden state' → '隐藏状态', 'Input Encoder' → '输入编码器'",
+}
+IMAGE_STYLE = (
+    "These are text labels read from an image (a diagram, figure, screenshot, sign or photo). Each translated label is "
+    "drawn over the original in the same box, so keep it about as short as the original; use noun phrases for labels. "
+    "Unlike rule 5, translate common technical terms{examples} and do not add the original in parentheses; "
+    "keep only proper names, acronyms, symbols and code as they are."
+)
+
+
+def system_prompt(context: str, kind: str, lang: str = "ko") -> str:
+    if kind == "image":
+        ex = IMAGE_EXAMPLES.get(lang)
+        style = IMAGE_STYLE.format(examples=f" (e.g. {ex})" if ex else "")
+    else:
+        style = STYLE.get(lang, {}).get(kind) or STYLE["*"][kind]
+    if lang in LANGS:
+        return SYSTEM.format(lang=LANGS[lang][1], context=context, style=style)
+    # 직접 입력한 언어: 입력한 글을 그대로 언어 이름 자리에 두고, 어떻게 해석할지 알려 준다
+    target = CUSTOM_LANGS[lang]
+    style = (
+        f'The target language was typed by the user as free text: "{target}". Interpret it as a language, dialect, '
+        f"script or register and write every translation in it. {style}"
+    )
+    return SYSTEM.format(lang=f'"{target}"', context=context, style=style)
 
 
 def list_models() -> list[dict]:
@@ -487,6 +697,27 @@ PEPAR_SCRIPT = """
     btn.textContent = showingOrig ? '번역 보기' : '원문 보기';
   });
 
+  // 텍스트 번역: 지금 보이는 쪽(번역 또는 원문)을 문단 구분을 살려 복사한다
+  const copyBtn = document.getElementById('pepar-copy');
+  if (copyBtn) copyBtn.addEventListener('click', async () => {
+    const text = [...document.querySelectorAll('main.pepar-text .para')]
+      .map(d => [...d.querySelectorAll('p')].map(p => p.textContent).join('\\n')).join('\\n\\n');
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch {}
+    if (!ok) {  // http로 접속하면 clipboard API를 쓸 수 없다
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.append(ta);
+      ta.select();
+      try { ok = document.execCommand('copy'); } catch {}
+      ta.remove();
+    }
+    const label = copyBtn.textContent;
+    copyBtn.textContent = ok ? '복사됨' : '복사 실패';
+    setTimeout(() => { copyBtn.textContent = label; }, 1500);
+  });
+
   if (!cfg.map) return;
 
   // 스크립트 유지 모드: 사이트 스크립트가 블록을 원문으로 다시 그리면, 원문 텍스트로 번역을 찾아 다시 입힌다
@@ -522,7 +753,8 @@ PEPAR_SCRIPT = """
 
 
 def _bar_html(doc: "Doc", model: str, home: str, failed: int, retry_url: str | None) -> str:
-    src_label = "arXiv 원문" if doc.kind == "arxiv" else "원문 페이지"
+    src_label = {"arxiv": "arXiv 원문", "text": "원문 텍스트"}.get(doc.kind, "원문 페이지")
+    copy = '<button id="pepar-copy" type="button">복사</button>' if doc.kind == "text" else ""
     retry = ""
     if failed and retry_url:
         retry = f'<a class="pepar-retry" href="{html_escape(retry_url)}" title="번역에 실패한 블록만 다시 번역">실패 {failed}블록 재번역</a>'
@@ -532,6 +764,7 @@ def _bar_html(doc: "Doc", model: str, home: str, failed: int, retry_url: str | N
         f"{retry}"
         f'<a href="{html_escape(home)}">PEPAR</a>'
         f'<a href="{html_escape(doc.url)}" target="_blank" rel="noopener">{src_label}</a>'
+        f"{copy}"
         '<button id="pepar-toggle" type="button">원문 보기</button>'
         "</div>"
     )
@@ -609,7 +842,7 @@ def build(doc: Doc, translations: dict[int, str], model: str, home: str, retry_u
             a["data-pepar-hash"] = a["href"]
     _absolutize(soup, doc.url)
     if soup.html:
-        soup.html["lang"] = "ko"
+        soup.html["lang"] = doc.lang
     head = soup.head
     if head is None:
         head = soup.new_tag("head")
@@ -646,13 +879,15 @@ def run(
     keep_scripts: bool = settings["keep_scripts"],
     retry_url: str | None = None,
     label: str | None = None,
+    lang: str = "ko",
+    text: str | None = None,
 ):
     """(key, 제목, 번역 HTML, 실패 블록 수). checkpoint에는 묶음마다 {원문: 번역문}을 저장해 끊겨도 이어서 번역한다. label은 결과 페이지에 표시할 모델 이름."""
     on_progress("fetching", 0, 0)
-    doc = load(src, keep_scripts)
+    doc = load(src, keep_scripts, lang, text)
     items = doc.items
     total = len(items)
-    system = SYSTEM.format(context=doc.context, style=STYLE[doc.kind])
+    system = system_prompt(doc.context, doc.kind, lang)
 
     saved = {}
     if checkpoint and checkpoint.exists():
