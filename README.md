@@ -55,6 +55,8 @@ python app.py                         # http://127.0.0.1:8765
 ### Docker
 
 ```bash
+git clone https://github.com/Yubin5/PEPAR.git
+cd PEPAR
 docker compose up -d                  # http://127.0.0.1:8765
 ```
 
