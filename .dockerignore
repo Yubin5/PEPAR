@@ -5,3 +5,4 @@ cache
 *.log
 config.toml
 tests
+presentation
