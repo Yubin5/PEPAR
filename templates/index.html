@@ -66,6 +66,7 @@
   .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px 24px; flex-wrap: wrap; margin-bottom: 24px; }
   .top .sub { margin: 0; }
   .model select { max-width: 100%; }
+  .pickers { display: flex; gap: 8px 16px; flex-wrap: wrap; align-items: center; }
   .logout { font-size: 13px; color: var(--muted); }
 
   .tabs, .chips { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -90,14 +91,23 @@
 <main>
   <header class="top">
     <h1>PEPAR</h1>
-    <label class="model">모델
-      <select name="model" id="model" form="form">
-        {% for m in models %}
-        <option value="{{ m.id }}" data-vision="{{ 1 if m.vision else '' }}" {% if m.id == default_model %}selected{% endif %}>{{ m.id }}{% if m.loaded %} · 로드됨{% endif %}{% if m.vision %} · 이미지{% endif %}</option>
-        {% endfor %}
-      </select>
+    <div class="pickers">
+      <label class="model">번역할 언어
+        <select name="lang" id="lang" form="form">
+          {% for code, names in langs.items() %}
+          <option value="{{ code }}" {% if code == default_lang %}selected{% endif %}>{{ names[0] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="model">모델
+        <select name="model" id="model" form="form">
+          {% for m in models %}
+          <option value="{{ m.id }}" data-vision="{{ 1 if m.vision else '' }}" {% if m.id == default_model %}selected{% endif %}>{{ m.id }}{% if m.loaded %} · 로드됨{% endif %}{% if m.vision %} · 이미지{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
       {% if auth %}<a class="logout" href="/logout">로그아웃</a>{% endif %}
-    </label>
+    </div>
   </header>
   {% if models_error %}<p class="hint warn" style="margin:-12px 0 16px">{{ models_error }}</p>{% endif %}
 
@@ -169,6 +179,17 @@
     if (last && [...sel.options].some(o => o.value === last)) sel.value = last;
   } catch {}
   sel.addEventListener('change', () => { try { localStorage.setItem('pepar-model', sel.value); } catch {} });
+  // 번역할 언어도 브라우저별로 기억
+  const langSel = document.getElementById('lang');
+  try {
+    const last = localStorage.getItem('pepar-lang');
+    if (last && [...langSel.options].some(o => o.value === last)) langSel.value = last;
+  } catch {}
+  langSel.addEventListener('change', () => { try { localStorage.setItem('pepar-lang', langSel.value); } catch {} });
+  const DEFAULT_LANG = {{ default_lang|tojson }};
+  // 모델 칸: 한국어는 모델 이름 그대로, 다른 언어는 "모델@언어" (서버의 slot_for와 같다)
+  const slotOf = (model, lang) => lang === DEFAULT_LANG ? model : `${model}@${lang}`;
+  const langTag = (lang, name) => lang && lang !== DEFAULT_LANG ? el('span', { className: 'tag', textContent: name }) : null;
 
   const $ = id => document.getElementById(id);
 
@@ -296,7 +317,8 @@
         el('div', { className: 'meta' },
           kindTag(j.key),
           kindOf(j.key) === 'doc' ? el('span', { textContent: sourceOf(j.key, j.url) }) : null,
-          el('span', { className: 'tag', textContent: j.llm || j.model })),
+          el('span', { className: 'tag', textContent: j.llm || j.model }),
+          langTag(j.lang, j.lang_name)),
         bar,
         el('div', { className: 'status' }, status));
     }));
@@ -343,7 +365,7 @@
     const terms = q.split(/\s+/).filter(Boolean);
     const matched = docs.filter(d => {
       if (!terms.length) return true;
-      const hay = `${d.title} ${d.where} ${KIND_LABEL[kindOf(d.key)]} ${d.model} ${d.url} ${d.key}`.toLowerCase();
+      const hay = `${d.title} ${d.where} ${KIND_LABEL[kindOf(d.key)]} ${d.model} ${d.lang_name} ${d.url} ${d.key}`.toLowerCase();
       return terms.every(t => hay.includes(t)) || contentHits.has(`${d.model}/${d.key}`);
     });
     const counts = { doc: 0, image: 0 };
@@ -366,7 +388,8 @@
       const meta = el('div', { className: 'meta' },
         kindTag(d.key),
         kind === 'doc' ? el('span', { textContent: d.where }) : null,
-        el('span', { className: 'tag', textContent: d.model }),
+        el('span', { className: 'tag', textContent: d.llm }),
+        langTag(d.lang, d.lang_name),
         el('span', { textContent: when(d.translated_at), title: '번역한 시각' }));
       if (d.blocks) meta.append(el('span', { textContent: `${d.blocks}${kind === 'image' ? '개 라벨' : '블록'}` + (d.seconds ? ` · ${dur(d.seconds)} 소요` : '') }));
       if (d.failed) meta.append(el('span', { className: 'warn' }, `실패 ${d.failed}${kind === 'image' ? '라벨' : '블록'} · `,
@@ -426,21 +449,21 @@
       opt.disabled = image && !o.dataset.vision;
       return opt;
     }));
-    pick.value = d.model;
+    pick.value = d.llm;
     if (pick.selectedOptions[0]?.disabled) pick.selectedIndex = [...pick.options].findIndex(o => !o.disabled);
     dlg.returnValue = '';
     dlg.onclose = () => {
       if (dlg.returnValue !== 'ok' || !pick.value) return;
       location.href = failedOnly
-        ? docHref(d, '?retry_failed=1' + (pick.value !== d.model ? `&with=${encodeURIComponent(pick.value)}` : ''))
-        : docHref({ model: pick.value, key: d.key }, '?retranslate=1');
+        ? docHref(d, '?retry_failed=1' + (pick.value !== d.llm ? `&with=${encodeURIComponent(pick.value)}` : ''))
+        : docHref({ model: slotOf(pick.value, d.lang), key: d.key }, '?retranslate=1');  // 같은 언어로
     };
     dlg.showModal();
   }
 
   function confirmDelete(d) {
     const dlg = $('confirm-delete');
-    $('confirm-text').textContent = `“${d.title}” (${d.model}) 번역을 삭제합니다. 되돌릴 수 없습니다.`;
+    $('confirm-text').textContent = `“${d.title}” (${d.llm}${d.lang !== DEFAULT_LANG ? ' · ' + d.lang_name : ''}) 번역을 삭제합니다. 되돌릴 수 없습니다.`;
     dlg.returnValue = '';
     dlg.onclose = async () => {
       if (dlg.returnValue !== 'ok') return;

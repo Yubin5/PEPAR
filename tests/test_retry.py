@@ -12,16 +12,18 @@ class RetryFailedTest(unittest.TestCase):
     def setUp(self):
         self.client = pepar.app.test_client()
         self.calls = []
+        self.langs = []
 
-        def fake_run(src, model, progress, checkpoint=None, retry_url=None, label=None):
+        def fake_run(src, model, progress, checkpoint=None, retry_url=None, label=None, lang="ko"):
             saved = json.loads(checkpoint.read_text()) if checkpoint and checkpoint.exists() else None
             self.calls.append({"model": model, "label": label, "checkpoint": saved})
+            self.langs.append(lang)
             progress("translating", 1, 1)
             return src.key + "v1", "t", "<html></html>", 0
 
         self._orig = translator.run
         translator.run = fake_run
-        for m in ("a", "b"):
+        for m in ("a", "b", "a@en"):
             for p in pepar.model_dir(m).glob("*"):
                 p.unlink()
         pepar.jobs.clear()
@@ -48,6 +50,27 @@ class RetryFailedTest(unittest.TestCase):
         self.client.get(f"/view/a/{KEY}?retry_failed=1")
         self.wait()
         self.assertEqual(self.calls, [{"model": "a", "label": "a", "checkpoint": {"x": "y"}}])
+
+    def test_other_language_has_its_own_slot(self):
+        # 한국어 결과(a)가 있어도 영어(a@en)는 따로 번역하고, 따로 저장한다
+        (pepar.model_dir("a") / f"{KEY}v1.html").write_text("ko")
+        r = self.client.get(f"/open?model=a&lang=en&url={KEY}")
+        self.assertEqual(r.headers["Location"], f"/view/a@en/{KEY}")
+        self.client.get(f"/view/a@en/{KEY}")
+        self.wait()
+        self.assertEqual(self.calls, [{"model": "a", "label": "a · English", "checkpoint": None}])
+        self.assertEqual(self.langs, ["en"])
+        self.assertEqual((pepar.model_dir("a") / f"{KEY}v1.html").read_text(), "ko")
+        self.assertEqual((pepar.model_dir("a@en") / f"{KEY}v1.html").read_text(), "<html></html>")
+
+    def test_korean_keeps_the_plain_model_slot(self):
+        r = self.client.get(f"/open?model=a&lang=ko&url={KEY}")
+        self.assertEqual(r.headers["Location"], f"/view/a/{KEY}")
+
+    def test_bad_language_or_slot_rejected(self):
+        self.assertEqual(self.client.get(f"/open?model=a&lang=xx&url={KEY}").status_code, 400)
+        self.assertEqual(self.client.get(f"/open?model=a@en&url={KEY}").status_code, 400)
+        self.assertEqual(self.client.get(f"/view/a@en/{KEY}?retry_failed=1&with=b@ja").status_code, 400)
 
     def test_bad_model_rejected(self):
         self.assertEqual(self.client.get(f"/view/a/{KEY}?retry_failed=1&with=../x").status_code, 400)

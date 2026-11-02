@@ -21,7 +21,8 @@
     overflow: hidden; line-height: 1.15; white-space: nowrap; overflow-wrap: anywhere; font-weight: 500;
     font-family: system-ui, "Pretendard", "Noto Sans KR", sans-serif; background: #fffe; color: #111;
     border-radius: 2px; transition: opacity .12s; cursor: default; }
-  .lb.wrap { white-space: normal; word-break: keep-all; }  /* 한국어는 낱말 단위로 줄바꿈 */
+  .lb.wrap { white-space: normal; }
+  .stage:lang(ko) .lb.wrap { word-break: keep-all; }  /* 한국어는 낱말 단위로 줄바꿈 (일본어·중국어는 글자 단위로 끊어야 한다) */
   .lb.block { justify-content: flex-start; align-items: flex-start; text-align: left; }
   .lb.block.center { justify-content: center; align-items: center; text-align: center; }
   .lb:hover { opacity: 0; }  /* 마우스를 올리면 그 자리의 원문이 보인다 */
@@ -51,7 +52,7 @@
     <button id="toggle" class="primary" type="button">원문 보기</button>
   </div>
 
-  <div class="stage" id="stage">
+  <div class="stage" id="stage" lang="{{ lang }}">
     <img id="img" src="/image/{{ key }}" width="{{ width }}" height="{{ height }}" alt="{{ title }}">
   </div>
   <p class="hint">라벨에 마우스를 올리면 그 자리의 원문이 보입니다.</p>

@@ -31,7 +31,8 @@ SOURCES = CACHE / "sources.json"  # web key는 해시라 URL을 따로 기록
 IMAGES = CACHE / "images"
 IMAGES.mkdir(exist_ok=True)
 KEY_RE = re.compile(r"^(\d{4}\.\d{4,5}(v\d+)?|[wi]-[0-9a-f]{12})$")
-MODEL_RE = re.compile(r"^[\w.\-]+$")
+# URL·캐시 폴더에 쓰는 "모델 칸": 한국어는 모델 이름 그대로(예전 결과와 같은 자리), 다른 언어는 "모델@언어"
+MODEL_RE = re.compile(r"^[\w.\-]+(@[a-z]{2})?$")
 ACTIVE = ("queued", "fetching", "reading", "translating")
 
 
@@ -54,6 +55,7 @@ FAILED_KEEP = 24 * 3600
 sec_per_block = 7.0
 
 
+# <model>은 모델 칸 (gemma4-12b, gemma4-12b@en)
 # cache/<model>/<key>.html        번역 결과
 # cache/<model>/<key>.meta.json   번역 시각·제목·URL·블록 수 등
 # cache/<model>/<key>.partial.json 이어서 번역하기 위한 체크포인트 (이미지는 OCR 결과도)
@@ -100,6 +102,28 @@ def image_name(key: str) -> str:
     return load_sources().get(key, {}).get("name") or key
 
 
+def split_slot(slot: str) -> tuple[str, str]:
+    """모델 칸 → (모델, 언어)."""
+    model, _, lang = slot.partition("@")
+    return model, lang if lang in translator.LANGS else translator.DEFAULT_LANG
+
+
+def slot_for(model: str, lang: str) -> str:
+    return model if lang == translator.DEFAULT_LANG else f"{model}@{lang}"
+
+
+def slot_label(slot: str) -> str:
+    """화면에 보일 이름: gemma4-12b · English."""
+    model, lang = split_slot(slot)
+    return model if lang == translator.DEFAULT_LANG else f"{model} · {translator.LANGS[lang][0]}"
+
+
+def pick_lang(requested: str | None) -> str:
+    if requested and requested not in translator.LANGS:
+        abort(400)
+    return requested or translator.DEFAULT_LANG
+
+
 def model_dir(model: str) -> Path:
     d = CACHE / model
     d.mkdir(exist_ok=True)
@@ -133,8 +157,12 @@ def doc_info(p: Path, sources: dict) -> dict:
     url = meta.get("url") or (
         sources.get(key, {}).get("url", "") if key.startswith("w-") else f"https://arxiv.org/abs/{key}"
     )
+    llm, lang = split_slot(model)
     return {
         "model": model,
+        "llm": llm,
+        "lang": lang,
+        "lang_name": translator.LANGS[lang][0],
         "key": key,
         "title": title,
         "url": url,
@@ -172,8 +200,9 @@ def worker():
         job = work.get()
         if job.get("cancel"):
             continue
-        model, key = job["model"], job["key"]
-        llm = job.get("llm") or model
+        model, key = job["model"], job["key"]  # model은 모델 칸
+        base, lang = split_slot(model)
+        llm = job.get("llm") or base
 
         def progress(stage, done, total, **info):
             if job.get("cancel"):
@@ -193,11 +222,11 @@ def worker():
             if src.kind == "image":
                 resolved, title = key, image_name(key)
                 job["title"] = title
-                html, failed = translate_image(model, key, title, progress, checkpoint, retry_url, llm)
+                html, failed = translate_image(model, key, title, progress, checkpoint, retry_url, llm, lang)
             else:
+                label = slot_label(model) if llm == base else f"{slot_label(model)} + {llm}"
                 resolved, title, html, failed = translator.run(
-                    src, llm, progress, checkpoint=checkpoint, retry_url=retry_url,
-                    label=model if llm == model else f"{model} + {llm}",
+                    src, llm, progress, checkpoint=checkpoint, retry_url=retry_url, label=label, lang=lang,
                 )
             out = model_dir(model) / f"{resolved}.html"
             out.write_text(html, encoding="utf-8")
@@ -236,10 +265,10 @@ def worker():
         save_failed()
 
 
-def translate_image(model, key, title, progress, checkpoint, retry_url, llm) -> tuple[str, int]:
+def translate_image(model, key, title, progress, checkpoint, retry_url, llm, lang) -> tuple[str, int]:
     """라벨은 <key>.labels.json에도 저장한다 (보기 화면은 매번 최신 템플릿으로 그림)."""
     path = image_path(key)
-    labels, failed = ocr.run(llm, path.read_bytes(), progress, checkpoint=checkpoint)
+    labels, failed = ocr.run(llm, path.read_bytes(), progress, checkpoint=checkpoint, lang=lang)
     with Image.open(path) as img:
         width, height = img.size
     data = {"title": title, "labels": labels, "failed": failed, "width": width, "height": height}
@@ -249,7 +278,10 @@ def translate_image(model, key, title, progress, checkpoint, retry_url, llm) -> 
 
 
 def render_image(model: str, key: str, data: dict) -> str:
-    return render_template("image_view.html", model=model, key=key, retry_url=f"/view/{model}/{key}?retry_failed=1", **data)
+    return render_template(
+        "image_view.html", model=slot_label(model), lang=split_slot(model)[1], key=key,
+        retry_url=f"/view/{model}/{key}?retry_failed=1", **data,
+    )
 
 
 def save_failed():
@@ -292,8 +324,10 @@ def start_job(model: str, key: str, llm: str | None = None):
             "message": "",
             "queued_at": time.time(),
         }
-        if llm and llm != model:
-            job["llm"] = llm
+        base, lang = split_slot(model)
+        job["llm"] = llm or base  # 실제로 번역할 모델 (실패분 재번역은 다른 모델일 수 있다)
+        job["lang"] = lang
+        job["lang_name"] = translator.LANGS[lang][0]
         work.put(job)
 
 
@@ -512,20 +546,24 @@ def http_error(e: HTTPException):
 @app.get("/")
 def index():
     models, models_error = get_models()
-    return render_template("index.html", models=models, models_error=models_error, default_model=translator.pick_default_model(models), auth=bool(PASSWORD))
+    return render_template(
+        "index.html", models=models, models_error=models_error, default_model=translator.pick_default_model(models),
+        langs=translator.LANGS, default_lang=translator.DEFAULT_LANG, auth=bool(PASSWORD),
+    )
 
 
 @app.get("/open")
 def open_link():
     try:
         model = pick_model(request.args.get("model"))
-        if not MODEL_RE.match(model):
+        if not MODEL_RE.match(model) or "@" in model:
             abort(400)
+        lang = pick_lang(request.args.get("lang"))
         src = translator.parse_source(request.args.get("url", ""))
     except translator.PeparError as e:
         return render_template("progress.html", error=str(e), model="", key="", src_url=""), 400
     remember_source(src)
-    return redirect(url_for("view", model=model, key=src.key))
+    return redirect(url_for("view", model=slot_for(model, lang), key=src.key))
 
 
 @app.post("/upload")
@@ -539,8 +577,9 @@ def upload():
         model = pick_model(request.form.get("model"))
     except translator.PeparError as e:
         return fail(str(e))
-    if not MODEL_RE.match(model):
+    if not MODEL_RE.match(model) or "@" in model:
         abort(400)
+    lang = pick_lang(request.form.get("lang"))
     f = request.files.get("image")
 
     if not f or not f.filename:
@@ -563,7 +602,7 @@ def upload():
         sources = load_sources()
         sources[key] = {"kind": "image", "url": f"/image/{key}", "name": Path(f.filename).name[:200]}
         SOURCES.write_text(json.dumps(sources, ensure_ascii=False, indent=1), encoding="utf-8")
-    return redirect(url_for("view", model=model, key=key))
+    return redirect(url_for("view", model=slot_for(model, lang), key=key))
 
 
 MAX_UPLOAD_READ = ocr.MAX_UPLOAD + 1  # 한도 초과를 알 수 있도록 1바이트 더 읽는다
@@ -592,7 +631,7 @@ def view(model, key):
         return redirect(url_for("view", model=model, key=key))
     if request.args.get("retry_failed") == "1":  # 체크포인트를 두고 다시 돌려 빠진 블록만 번역
         llm = request.args.get("with") or None  # 빠진 블록을 번역할 모델
-        if llm and not MODEL_RE.match(llm):
+        if llm and (not MODEL_RE.match(llm) or "@" in llm):
             abort(400)
         if not active:
             start_job(model, key, llm)
@@ -606,7 +645,7 @@ def view(model, key):
             return path.read_text(encoding="utf-8")
         start_job(model, key)  # 처음이거나 지난번에 실패했으면 이어서 시도
     title = image_name(key) if key.startswith("i-") else ""
-    return render_template("progress.html", error="", model=model, key=key, src_url=source_url(key), title=title)
+    return render_template("progress.html", error="", model=model, label=slot_label(model), key=key, src_url=source_url(key), title=title)
 
 
 @app.get("/paper/<key>")

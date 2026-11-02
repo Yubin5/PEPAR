@@ -81,6 +81,7 @@ class Doc:
     context: str
     items: list = field(default_factory=list)
     keep_scripts: bool = False  # web: 사이트 스크립트를 살려 두고 번역은 브라우저에서 다시 입힌다
+    lang: str = "ko"  # 번역할 언어 (LANGS의 코드)
 
 
 ARXIV_BLOCKS = "article.ltx_document p.ltx_p, article.ltx_document .ltx_title, article.ltx_document figcaption"
@@ -120,7 +121,7 @@ def _text(el) -> str:
     return " ".join(el.get_text(" ").split())
 
 
-def load_arxiv(src: Source) -> Doc:
+def load_arxiv(src: Source, lang: str = "ko") -> Doc:
     try:
         r = requests.get(f"https://arxiv.org/html/{src.url}", headers=UA_PEPAR, timeout=60)
     except requests.RequestException as e:
@@ -147,7 +148,7 @@ def load_arxiv(src: Source) -> Doc:
     if abstract:
         parts.append("Abstract: " + _text(abstract).removeprefix("Abstract").strip())
 
-    doc = Doc(soup, r.url, resolved, "arxiv", title, "\n".join(parts))
+    doc = Doc(soup, r.url, resolved, "arxiv", title, "\n".join(parts), lang=lang)
     for el in _outermost(soup.select(ARXIV_BLOCKS)):
         if el.find_parent(class_=re.compile(r"ltx_(bibliography|tabular|equation)")):
             continue
@@ -155,7 +156,7 @@ def load_arxiv(src: Source) -> Doc:
     return doc
 
 
-def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"]) -> Doc:
+def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: str = "ko") -> Doc:
     try:
         r = netguard.fetch(src.url, UA_BROWSER, settings["allow_private_urls"])
     except requests.RequestException as e:
@@ -198,7 +199,7 @@ def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"]) -> Doc:
         parts.append("Description: " + desc["content"].strip())
     parts.append("Beginning of the page: " + _text(root)[:1200])
 
-    doc = Doc(soup, base, src.key, "web", title, "\n".join(parts), keep_scripts=keep_scripts)
+    doc = Doc(soup, base, src.key, "web", title, "\n".join(parts), keep_scripts=keep_scripts, lang=lang)
     blocks = root.select(WEB_BLOCKS)
     block_ids = {id(b) for b in blocks}
     # 가장 안쪽 블록만 번역 단위로 쓴다
@@ -248,8 +249,8 @@ def _split_at_br(soup, el):
     return units
 
 
-def load(src: Source, keep_scripts: bool = settings["keep_scripts"]) -> Doc:
-    return load_arxiv(src) if src.kind == "arxiv" else load_web(src, keep_scripts)
+def load(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: str = "ko") -> Doc:
+    return load_arxiv(src, lang) if src.kind == "arxiv" else load_web(src, keep_scripts, lang)
 
 
 
@@ -275,14 +276,39 @@ def protect(el, atomic: str, pairs: str | None) -> tuple[str, list[str], dict[in
     return " ".join(el.get_text().split()), saved, closers
 
 
-# 번역할 가치가 있는지: 토큰을 뺀 텍스트에 한글이 아닌 글자가 2자 이상
-WORTH = re.compile(r"[^\W\d_가-힣ㄱ-ㅎㅏ-ㅣ]{2}")
+# 번역할 언어: 코드 → (화면에 보일 이름, 모델에게 줄 영어 이름)
+LANGS = {
+    "ko": ("한국어", "Korean"),
+    "en": ("English", "English"),
+    "ja": ("日本語", "Japanese"),
+    "zh": ("中文(简体)", "Simplified Chinese"),
+    "es": ("Español", "Spanish"),
+    "fr": ("Français", "French"),
+    "de": ("Deutsch", "German"),
+}
+DEFAULT_LANG = "ko"
+
+# 번역할 가치가 있는지: 토큰을 뺀 텍스트에 번역할 언어의 문자가 아닌 글자가 2자 이상.
+# 라틴 문자 언어끼리는 문자로 구별할 수 없어서 글자가 있으면 모두 보낸다 (이미 그 언어면 모델이 그대로 돌려준다)
+# 일본어는 가나만 자기 문자로 본다. 한자만 있는 글은 중국어일 수도 있어서 보낸다 (가나가 섞여 있으면 일본어로 본다)
+KANA = "\u3040-\u30ff"
+HANZI = "\u3400-\u9fff"
+_OWN_SCRIPT = {"ko": "가-힣ㄱ-ㅎㅏ-ㅣ", "ja": KANA, "zh": HANZI}
+# 글자 수는 이어져 있지 않아도 센다 ("1달 전"처럼 한 음절씩 띄어 쓴 한국어도 번역하도록)
+_WORTH = {lang: re.compile(rf"[^\W\d_{_OWN_SCRIPT.get(lang, '')}]") for lang in LANGS}
+_WORTH_JA_TEXT = re.compile(rf"[^\W\d_{KANA}{HANZI}]")  # 가나가 있는 글: 한자도 일본어
+_HAS_KANA = re.compile(rf"[{KANA}]")
+
+
+def worth(text: str, lang: str = "ko") -> bool:
+    pat = _WORTH_JA_TEXT if lang == "ja" and _HAS_KANA.search(text) else _WORTH[lang]
+    return len(pat.findall(text)) >= 2
 
 
 def _add_item(doc: Doc, el, atomic: str, pairs: str | None):
     orig = el.decode_contents()
     text, saved, closers = protect(el, atomic, pairs)
-    if not WORTH.search(TOKEN.sub("", text)):
+    if not worth(TOKEN.sub("", text), doc.lang):
         el.clear()
         el.append(BeautifulSoup(orig, "html.parser"))
         return
@@ -302,27 +328,54 @@ def batches(items):
 
 
 
-SYSTEM = """You are a professional translator into Korean.
+SYSTEM = """You are a professional translator into {lang}.
 
 Document context (use it for consistent terminology only; do not translate it):
 {context}
 
 Rules:
-1. Translate each item's "text" into natural Korean. {style}
-2. Self-closing tags like <x0/>, <x1/> stand for formulas, citations, code, images or other elements that must be kept. Copy every such tag exactly once and unchanged, placed where it fits Korean grammar.
-3. A tag pair <t0>...</t0> marks a link or emphasis. Keep both tags and put them around the Korean words that correspond to the original span.
+1. Translate each item's "text" into natural {lang}. {style}
+2. Self-closing tags like <x0/>, <x1/> stand for formulas, citations, code, images or other elements that must be kept. Copy every such tag exactly once and unchanged, placed where it fits {lang} grammar.
+3. A tag pair <t0>...</t0> marks a link or emphasis. Keep both tags and put them around the {lang} words that correspond to the original span.
 4. Never add, drop or renumber tags.
 5. Keep product/model/method names, acronyms, dataset and metric names, code identifiers in their original form. A technical term may be translated with the original in parentheses the first time it appears in an item.
-6. Output ONLY a JSON array of objects {{"id": <same id>, "text": "<Korean>"}} covering every input id. No commentary."""
+6. If an item is already in {lang}, return it unchanged.
+7. Output ONLY a JSON array of objects {{"id": <same id>, "text": "<{lang}>"}} covering every input id. No commentary."""
 
+# 문체 지시. 언어별로 따로 정한 것이 없으면 "*"를 쓴다. 이미지의 예시 낱말은 언어마다 다르다
 STYLE = {
-    "arxiv": "This is an academic paper: use the written plain style (~한다, ~이다), not 합니다체.",
-    "web": "Use the written plain style (~한다, ~이다) for prose; translate short UI labels and headings concisely.",
-    "image": "These are text labels read from an image (a diagram, figure, screenshot, sign or photo). Each Korean label is "
-    "drawn over the original in the same box, so keep it about as short as the original; use noun phrases for labels. "
-    "Unlike rule 5, translate common technical terms into Korean (e.g. 'hidden state' → '은닉 상태', 'Input Encoder' → "
-    "'입력 인코더') and do not add the original in parentheses; keep only proper names, acronyms, symbols and code as they are.",
+    "ko": {
+        "arxiv": "This is an academic paper: use the written plain style (~한다, ~이다), not 합니다체.",
+        "web": "Use the written plain style (~한다, ~이다) for prose; translate short UI labels and headings concisely.",
+    },
+    "ja": {
+        "arxiv": "This is an academic paper: use the written plain style (である調), not です・ます調.",
+    },
+    "*": {
+        "arxiv": "This is an academic paper: use a formal academic register.",
+        "web": "Use natural written prose; translate short UI labels and headings concisely.",
+    },
 }
+IMAGE_EXAMPLES = {
+    "ko": "'hidden state' → '은닉 상태', 'Input Encoder' → '입력 인코더'",
+    "ja": "'hidden state' → '隠れ状態', 'Input Encoder' → '入力エンコーダ'",
+    "zh": "'hidden state' → '隐藏状态', 'Input Encoder' → '输入编码器'",
+}
+IMAGE_STYLE = (
+    "These are text labels read from an image (a diagram, figure, screenshot, sign or photo). Each translated label is "
+    "drawn over the original in the same box, so keep it about as short as the original; use noun phrases for labels. "
+    "Unlike rule 5, translate common technical terms{examples} and do not add the original in parentheses; "
+    "keep only proper names, acronyms, symbols and code as they are."
+)
+
+
+def system_prompt(context: str, kind: str, lang: str = "ko") -> str:
+    if kind == "image":
+        ex = IMAGE_EXAMPLES.get(lang)
+        style = IMAGE_STYLE.format(examples=f" (e.g. {ex})" if ex else "")
+    else:
+        style = STYLE.get(lang, {}).get(kind) or STYLE["*"][kind]
+    return SYSTEM.format(lang=LANGS[lang][1], context=context, style=style)
 
 
 def list_models() -> list[dict]:
@@ -609,7 +662,7 @@ def build(doc: Doc, translations: dict[int, str], model: str, home: str, retry_u
             a["data-pepar-hash"] = a["href"]
     _absolutize(soup, doc.url)
     if soup.html:
-        soup.html["lang"] = "ko"
+        soup.html["lang"] = doc.lang
     head = soup.head
     if head is None:
         head = soup.new_tag("head")
@@ -646,13 +699,14 @@ def run(
     keep_scripts: bool = settings["keep_scripts"],
     retry_url: str | None = None,
     label: str | None = None,
+    lang: str = "ko",
 ):
     """(key, 제목, 번역 HTML, 실패 블록 수). checkpoint에는 묶음마다 {원문: 번역문}을 저장해 끊겨도 이어서 번역한다. label은 결과 페이지에 표시할 모델 이름."""
     on_progress("fetching", 0, 0)
-    doc = load(src, keep_scripts)
+    doc = load(src, keep_scripts, lang)
     items = doc.items
     total = len(items)
-    system = SYSTEM.format(context=doc.context, style=STYLE[doc.kind])
+    system = system_prompt(doc.context, doc.kind, lang)
 
     saved = {}
     if checkpoint and checkpoint.exists():

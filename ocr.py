@@ -163,11 +163,11 @@ def _runs(flags: list[bool]) -> list[tuple[int, int]]:
     return runs
 
 
-def _cut(flags: list[bool]) -> int | None:
-    """가운데에 가장 가까운 넓은 빈 줄의 중심. 없으면 None."""
+def _cut(flags: list[bool], min_gap: int = MIN_GAP) -> int | None:
+    """가운데에 가장 가까운, min_gap 이상 넓은 빈 줄의 중심. 없으면 None."""
     n, best = len(flags), None
     for a, b in _runs(flags):
-        if a == 0 or b == n or b - a < MIN_GAP:
+        if a == 0 or b == n or b - a < min_gap:
             continue  # 가장자리 여백은 자를 곳이 아니다
         c = (a + b) // 2
         if best is None or min(c, n - c) > min(best, n - best):
@@ -183,11 +183,19 @@ def _trim(gray: Image.Image, box, hard):
         return None
     ny0, ny1 = y0 + rows[0], y0 + rows[-1] + 1
     cols = [i for i, b in enumerate(_blank(gray, (x0, ny0, x1, ny1), 1)) if not b]
+    if not cols:  # 행에는 다른 색이 있지만 어느 열도 내용으로 볼 만큼은 아니다: 얇은 선이나 그라데이션
+        return None
     nx0, nx1 = x0 + cols[0], x0 + cols[-1] + 1
     pad = 4  # 글자 바로 옆에서 자르지 않도록
     nb = (max(x0, nx0 - pad), max(y0, ny0 - pad), min(x1, nx1 + pad), min(y1, ny1 + pad))
     nh = tuple(h and nb[i] == box[i] for i, h in enumerate(hard))
     return nb, nh
+
+
+def _line_height(gray: Image.Image, box) -> int:
+    """영역 안 글자 한 줄의 높이 추정: 내용이 있는 가로줄이 이어진 높이의 중앙값."""
+    runs = sorted(b - a for a, b in _runs([not f for f in _blank(gray, box, 0)]) if b - a >= 3)
+    return runs[len(runs) // 2] if runs else MIN_GAP
 
 
 def _tiles(gray: Image.Image, box, hard=(False,) * 4, out=None) -> list:
@@ -204,7 +212,8 @@ def _tiles(gray: Image.Image, box, hard=(False,) * 4, out=None) -> list:
         return out
     # 긴 쪽부터 빈 줄을 찾고, 없으면 다른 쪽이라도
     for axis in sorted((0, 1), key=lambda a: -(h if a == 0 else w)):
-        c = _cut(_blank(gray, box, axis))
+        # 세로로 자를 때는 글자 한 줄 높이보다 넓은 빈칸에서만 (큰 글씨의 쉼표 뒤 빈칸에서 줄이 잘린 적이 있다)
+        c = _cut(_blank(gray, box, axis), MIN_GAP if axis == 0 else max(MIN_GAP, _line_height(gray, box)))
         if c is None:
             continue
         if axis == 0:
@@ -214,7 +223,12 @@ def _tiles(gray: Image.Image, box, hard=(False,) * 4, out=None) -> list:
             _tiles(gray, (x0, y0, x0 + c, y1), hard[:2] + (False,) + hard[3:], out)
             _tiles(gray, (x0 + c, y0, x1, y1), (False,) + hard[1:], out)
         return out
-    # 빈 줄이 없다: 긴 쪽을 반으로, 겹치게 자른다
+    # 빈 줄이 없다. 한도를 조금 넘는 정도면 통째로 읽는다: 억지로 자르면 경계를 가로지르는 긴 줄은
+    # 양쪽 조각에서 모두 경계에 닿아 버려진다
+    if max(w, h) <= TILE * 1.5:
+        out.append((box, hard))
+        return out
+    # 그보다 크면 긴 쪽을 반으로, 겹치게 자른다
     if h >= w:
         m = y0 + h // 2
         _tiles(gray, (x0, y0, x1, m + OVERLAP // 2), hard[:3] + (True,), out)
@@ -336,7 +350,7 @@ def read_image(model: str, data: bytes, on_progress) -> list[dict]:
 
 
 
-def run(model: str, data: bytes, on_progress, checkpoint=None) -> tuple[list[dict], int]:
+def run(model: str, data: bytes, on_progress, checkpoint=None, lang: str = "ko") -> tuple[list[dict], int]:
     """(라벨 목록, 실패 라벨 수). checkpoint에 OCR 결과와 번역문을 저장해 실패한 라벨만 다시 번역할 때 OCR을 되풀이하지 않는다."""
     saved = {}
     if checkpoint and checkpoint.exists():
@@ -354,11 +368,12 @@ def run(model: str, data: bytes, on_progress, checkpoint=None) -> tuple[list[dic
         raise translator.PeparError("이미지에서 글자를 찾지 못했습니다.")
 
     # 숫자·기호뿐인 라벨은 번역할 게 없으니 원문 그대로 둔다
-    todo = [i for i, lb in enumerate(labels) if "ko" not in lb and translator.WORTH.search(lb["text"])]
+    # 번역문은 언어와 상관없이 "ko" 키에 둔다 (예전 결과 파일과 맞추려고)
+    todo = [i for i, lb in enumerate(labels) if "ko" not in lb and translator.worth(lb["text"], lang)]
     items = [{"text": lb["text"]} for lb in labels]
     context = "\n".join(lb["text"] for lb in labels)[:3000]
-    system = translator.SYSTEM.format(context=context, style=translator.STYLE["image"])
-    total = sum(1 for lb in labels if translator.WORTH.search(lb["text"]))
+    system = translator.system_prompt(context, "image", lang)
+    total = sum(1 for lb in labels if translator.worth(lb["text"], lang))
     done = total - len(todo)
     on_progress("translating", done, total)
     for idxs in translator.batches([items[i] for i in todo]):
@@ -369,5 +384,5 @@ def run(model: str, data: bytes, on_progress, checkpoint=None) -> tuple[list[dic
             checkpoint.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
         done += len(real)
         on_progress("translating", done, total)
-    failed = sum(1 for lb in labels if "ko" not in lb and translator.WORTH.search(lb["text"]))
+    failed = sum(1 for lb in labels if "ko" not in lb and translator.worth(lb["text"], lang))
     return labels, failed

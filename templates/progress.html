@@ -21,7 +21,7 @@
     <p class="sub err">{{ error }}</p>
     <p><a href="/">처음으로</a></p>
   {% else %}
-  <p class="sub"><a class="src" href="{{ src_url }}" target="_blank" rel="noopener">{{ title or src_url or key }}</a><br>{{ model }}로 번역 중</p>
+  <p class="sub"><a class="src" href="{{ src_url }}" target="_blank" rel="noopener">{{ title or src_url or key }}</a><br>{{ label or model }}로 번역 중</p>
   <div class="card">
     <div id="stage">준비 중…</div>
     <div class="bar"><div id="fill"></div></div>
