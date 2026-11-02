@@ -33,11 +33,17 @@ def load(config: str | None = None, **env):
 
 
 class ConfigTest(unittest.TestCase):
-    def test_example_matches_defaults(self):
+    def test_shipped_config_matches_defaults(self):
+        # 레포에 들어 있는 config.toml(기본값)이 코드의 기본값과 같아야 한다. 작업 폴더의 파일은 각자 고친
+        # 실제 설정일 수 있어서, 깃에 등록된 내용을 읽는다
+        import subprocess
+
         import config
 
-        example = tomllib.loads((ROOT / "config.example.toml").read_text(encoding="utf-8"))
-        self.assertEqual(example, config.DEFAULTS)
+        r = subprocess.run(["git", "show", ":config.toml"], cwd=ROOT, capture_output=True, text=True)
+        if r.returncode:
+            self.skipTest("깃 저장소가 아니다")
+        self.assertEqual(tomllib.loads(r.stdout), config.DEFAULTS)
 
     def test_defaults_without_file(self):
         s = load()

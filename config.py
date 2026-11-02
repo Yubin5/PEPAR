@@ -31,7 +31,7 @@ def _load() -> dict:
     if path.is_dir():
         # 예전 compose.yml은 config.toml 파일 하나를 연결했는데, 파일이 없으면 Docker가 그 이름으로 빈 폴더를 만든다
         print(f"Ignoring {path}: it is a directory, not a file (Docker creates one when a mounted file is missing). "
-              "Remove it (rmdir config.toml) and copy config.example.toml to config.toml to change settings.",
+              "Remove it (rmdir config.toml) and restore the file (git checkout config.toml).",
               file=sys.stderr, flush=True)
     elif path.exists():
         try:

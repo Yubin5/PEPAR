@@ -1,4 +1,4 @@
-# 설정은 이 폴더의 config.toml 하나로 (없으면 기본값). 바꾸려면 config.example.toml을 config.toml로 복사해 고친다
+# 설정은 이 폴더의 config.toml 하나로
 services:
   pepar:
     build: .
