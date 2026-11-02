@@ -687,6 +687,34 @@ def index():
     )
 
 
+def wants_json() -> bool:
+    """첫 화면이 화면을 옮기지 않고 보낸 요청인지 (결과를 JSON으로 받는다)."""
+    return "application/json" in request.headers.get("Accept", "")
+
+
+def start_fail(msg: str):
+    if wants_json():
+        return jsonify(error=msg), 400
+    return render_template("progress.html", error=msg, model="", key="", src_url=""), 400
+
+
+def started(slot: str, key: str):
+    """번역 요청을 받은 뒤의 응답. 첫 화면에서 온 요청이면 작업만 시작하고 상태를 알려 준다 (번역 중 화면으로 옮기지 않는다).
+    아니면 예전처럼 번역 화면으로 보낸다 (거기서 작업이 시작된다)."""
+    href = url_for("view", model=slot, key=key)
+    if not wants_json():
+        return redirect(href)
+    job = jobs.get(f"{slot}/{key}")
+    if job and job["stage"] in ACTIVE:
+        status = "running"
+    elif cached_path(slot, key):
+        status = "done"
+    else:
+        start_job(slot, key)  # 처음이거나 지난번에 실패했으면 이어서
+        status = "started"
+    return jsonify(status=status, model=slot, key=key, href=href)
+
+
 @app.get("/open")
 def open_link():
     try:
@@ -699,18 +727,15 @@ def open_link():
         else:  # PDF 탭의 링크 칸: arXiv도 PDF로
             src = translator.parse_source(request.args.get("pdf_url", ""), pdf=True)
     except translator.PeparError as e:
-        return render_template("progress.html", error=str(e), model="", key="", src_url=""), 400
+        return start_fail(str(e))
     remember_source(src)
-    return redirect(url_for("view", model=slot_for(model, lang), key=src.key))
+    return started(slot_for(model, lang), src.key)
 
 
 @app.post("/upload")
 def upload():
     """같은 이미지는 같은 key라 캐시를 다시 쓴다."""
-    def fail(msg):
-        return render_template("progress.html", error=msg, model=model, key="", src_url=""), 400
-
-    model = ""
+    fail = start_fail
     try:
         model = pick_model(request.form.get("model"))
     except translator.PeparError as e:
@@ -737,7 +762,7 @@ def upload():
         key = pdfdoc.pdf_key(data)
         save_pdf(key, data)
         remember_upload(key, "pdf", f"/pdf/{key}", f.filename)
-        return redirect(url_for("view", model=slot_for(model, lang), key=key))
+        return started(slot_for(model, lang), key)
     try:
         models = {m["id"]: m for m in translator.list_models()}
     except Exception:  # noqa: BLE001 - 목록 없이 진행
@@ -753,7 +778,7 @@ def upload():
     if not image_path(key):
         (IMAGES / f"{key}.{ext}").write_bytes(data)
     remember_upload(key, "image", f"/image/{key}", f.filename)
-    return redirect(url_for("view", model=slot_for(model, lang), key=key))
+    return started(slot_for(model, lang), key)
 
 
 def remember_upload(key: str, kind: str, url: str, filename: str):
@@ -783,9 +808,8 @@ def pdf_page(key, n):
 
 @app.post("/text")
 def paste_text():
-    """붙여넣은 텍스트를 저장하고 번역 화면으로. 같은 글은 같은 key라 캐시를 다시 쓴다."""
-    def fail(msg):
-        return render_template("progress.html", error=msg, model="", key="", src_url=""), 400
+    """붙여넣은 텍스트를 저장하고 번역을 시작한다. 같은 글은 같은 key라 캐시를 다시 쓴다."""
+    fail = start_fail
 
     try:
         model = pick_model(request.form.get("model"))
@@ -808,7 +832,7 @@ def paste_text():
         first = next(line for line in text.splitlines() if line.strip())
         sources[key] = {"kind": "text", "url": f"/text/{key}", "name": " ".join(first.split())[:80]}
         SOURCES.write_text(json.dumps(sources, ensure_ascii=False, indent=1), encoding="utf-8")
-    return redirect(url_for("view", model=slot_for(model, lang), key=key))
+    return started(slot_for(model, lang), key)
 
 
 @app.get("/text/<key>")

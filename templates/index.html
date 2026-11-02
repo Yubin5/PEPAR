@@ -66,6 +66,10 @@
   .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px 24px; flex-wrap: wrap; margin-bottom: 24px; }
   .top .sub { margin: 0; }
   .model select { max-width: 100%; }
+  h1 .logo { height: 1.15em; width: auto; vertical-align: -0.2em; margin-right: 8px; }
+  .notice { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+  .notice.err { color: var(--err); }
+  .notice:empty { display: none; }
   .pickers { display: flex; gap: 8px 16px; flex-wrap: wrap; align-items: center; }
   .pickers input.lang-text { flex: none; width: 15em; padding: 8px 10px; }
   .lang-warn { color: var(--err); font-weight: 600; font-size: 14px; margin: -12px 0 16px; }
@@ -97,7 +101,7 @@
 <body>
 <main>
   <header class="top">
-    <h1>PEPAR</h1>
+    <h1><img class="logo" src="/favicon.svg" alt="">PEPAR</h1>
     <div class="pickers">
       <label class="model">번역할 언어
         <select name="lang" id="lang" form="form">
@@ -166,6 +170,7 @@
         </div>
       </div>
     </form>
+    <p class="notice" id="notice" role="status"></p>
   </div>
 
   <section id="jobs-section" hidden>
@@ -331,13 +336,63 @@
       textArea.focus();
       return;
     }
-    // 누른 버튼이 있는 탭의 입력만 보낸다 (주소 번역에 긴 텍스트가 주소창으로 실려 가지 않도록)
-    const panel = (e.submitter || $('panel-url')).closest('[id^="panel-"]');
-    const off = [...document.querySelectorAll('[id^="panel-"] input, [id^="panel-"] textarea')]
-      .filter(x => !panel.contains(x) && !x.disabled);
-    off.forEach(x => { x.disabled = true; });
-    setTimeout(() => off.forEach(x => { x.disabled = false; }));
+    // 화면을 옮기지 않고 보낸다: 번역은 서버에서 시작되고, 진행 상황은 아래 「번역 중」에서 본다
+    e.preventDefault();
+    send(e.submitter || $('panel-url').querySelector('button[type="submit"]'));
   });
+
+  // 안내 문구 (버튼 아래). parts는 글자나 요소
+  const notice = (err, ...parts) => {
+    $('notice').className = err ? 'notice err' : 'notice';
+    $('notice').replaceChildren(...parts);
+  };
+  const openLink = href => el('a', { href, target: '_blank', textContent: '열기' });
+  const watching = new Map();  // 이 화면에서 시작한 작업 "model/key" → 결과 주소. 끝나면 알려 준다
+
+  async function send(btn) {
+    // 누른 버튼이 있는 탭의 입력만 보낸다. 주소로 보내는 요청(GET)에는 파일을 싣지 않는다
+    const panel = btn.closest('[id^="panel-"]');
+    const method = (btn.getAttribute('formmethod') || 'get').toUpperCase();
+    const fd = new FormData();
+    fd.append('model', sel.value);
+    fd.append('lang', langSel.value);
+    if (langSel.value === 'other') fd.append('lang_text', langText.value);
+    for (const x of panel.querySelectorAll('input[name], textarea[name]')) {
+      if (x.type === 'file') { if (method === 'POST' && x.files[0]) fd.append(x.name, x.files[0]); }
+      else fd.append(x.name, x.value);
+    }
+    let url = btn.getAttribute('formaction') || $('form').getAttribute('action');
+    const init = { method, headers: { Accept: 'application/json' } };
+    if (method === 'GET') url += '?' + new URLSearchParams(fd); else init.body = fd;
+    btn.disabled = true;
+    notice(false, '보내는 중…');
+    try {
+      const r = await fetch(url, init);
+      if (r.status === 401) { location.reload(); return; }
+      const data = await r.json().catch(() => ({ error: `요청을 처리하지 못했습니다 (HTTP ${r.status}).` }));
+      if (!r.ok || data.error) throw new Error(data.error || `HTTP ${r.status}`);
+      if (data.status === 'done') {
+        notice(false, '이미 번역한 문서입니다 · ', openLink(data.href));
+      } else {
+        notice(false, data.status === 'running' ? '이미 번역 중입니다. 아래 「번역 중」에서 확인하세요.'
+                                                : '번역을 시작했습니다. 아래 「번역 중」에서 확인하세요.');
+        watching.set(`${data.model}/${data.key}`, data.href);
+        clearPanel(panel);
+      }
+      pollNow();
+    } catch (err) {
+      notice(true, err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // 보낸 탭의 입력을 비운다 (텍스트는 임시 저장분도)
+  function clearPanel(panel) {
+    for (const x of panel.querySelectorAll('input[name], textarea[name]')) x.value = '';
+    showFile(); showPdf(); showCount();
+    if (panel.contains(textArea)) { try { localStorage.removeItem('pepar-text-draft'); } catch {} }
+  }
   const el = (tag, props = {}, ...kids) => {
     const e = document.createElement(tag);
     Object.assign(e, props);
@@ -437,6 +492,14 @@
     } catch {}
     const active = jobs.filter(j => j.stage !== 'error');
     const now = new Set(active.map(j => `${j.model}/${j.key}`));
+    // 이 화면에서 시작한 작업이 끝났으면 버튼 아래에 알린다
+    for (const [k, href] of watching) {
+      if (now.has(k)) continue;
+      const failed = jobs.find(j => `${j.model}/${j.key}` === k && j.stage === 'error');
+      if (failed) notice(true, `번역에 실패했습니다: ${failed.message}`);
+      else notice(false, '번역이 끝났습니다 · ', openLink(href));
+      watching.delete(k);
+    }
     // 진행 중이던 작업이 목록에서 빠졌다 = 끝났다 → 문서 목록 새로고침
     if ([...jobKeys].some(k => !now.has(k))) loadDocs();
     jobKeys = now;

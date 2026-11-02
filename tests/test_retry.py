@@ -126,6 +126,33 @@ class RetryFailedTest(unittest.TestCase):
     def test_empty_text_rejected(self):
         self.assertEqual(self.client.post("/text", data={"model": "a", "text": "  \n "}).status_code, 400)
 
+    def test_start_from_home_without_leaving(self):
+        # 첫 화면에서 보낸 요청(JSON): 번역 화면으로 옮기지 않고 작업만 시작해 상태를 알려 준다
+        J = {"Accept": "application/json"}
+        for p in pepar.model_dir("a").glob(f"{KEY}*"):
+            p.unlink()
+        r = self.client.get(f"/open?model=a&url={KEY}", headers=J)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json(), {"status": "started", "model": "a", "key": KEY, "href": f"/view/a/{KEY}"})
+        self.wait()
+        self.assertEqual(len(self.calls), 1)
+        # 결과가 있으면 다시 번역하지 않고 열 주소만 (가짜 run은 key에 v1을 붙여 저장한다)
+        self.assertEqual(self.client.get(f"/open?model=a&url={KEY}", headers=J).get_json()["status"], "done")
+        self.assertEqual(len(self.calls), 1)
+        # 텍스트도 같은 방식, 오류는 JSON으로
+        r = self.client.post("/text", data={"model": "a", "text": "Hello there.\n\nSecond."}, headers=J)
+        self.assertEqual(r.get_json()["status"], "started")
+        r = self.client.post("/text", data={"model": "a", "text": "  "}, headers=J)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("error", r.get_json())
+        self.wait()
+
+    def test_running_job_is_reported(self):
+        J = {"Accept": "application/json"}
+        pepar.jobs[f"a/{KEY}"] = {"model": "a", "key": KEY, "stage": "translating", "done": 0, "total": 1, "queued_at": 0}
+        self.assertEqual(self.client.get(f"/open?model=a&url={KEY}", headers=J).get_json()["status"], "running")
+        pepar.jobs.clear()
+
     def test_bad_model_rejected(self):
         self.assertEqual(self.client.get(f"/view/a/{KEY}?retry_failed=1&with=../x").status_code, 400)
         self.assertEqual(self.calls, [])
