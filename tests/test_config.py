@@ -62,6 +62,27 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(load(f'llm_url = "{full}"')["llm_url"], full)
         self.assertEqual(load()["llm_url"], "http://127.0.0.1:9090/v1/chat/completions")
 
+    def test_directory_in_place_of_file_is_ignored(self):
+        # 파일이 없을 때 Docker가 만든 config.toml 폴더: 죽지 않고 기본값으로 뜬다
+        import io
+        from contextlib import redirect_stderr
+        saved = os.environ.get("PEPAR_CONFIG")
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "config.toml").mkdir()
+            os.environ["PEPAR_CONFIG"] = str(Path(d) / "config.toml")
+            err = io.StringIO()
+            try:
+                import config as mod
+                with redirect_stderr(err):
+                    s = importlib.reload(mod).settings
+            finally:
+                if saved is None:
+                    os.environ.pop("PEPAR_CONFIG", None)
+                else:
+                    os.environ["PEPAR_CONFIG"] = saved
+        self.assertEqual(s["port"], 8765)
+        self.assertIn("directory", err.getvalue())
+
     def test_unknown_key_rejected(self):
         with self.assertRaises(SystemExit):
             load("prot = 1")

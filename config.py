@@ -1,4 +1,5 @@
-"""Settings live in config.toml (one file, also used by Docker). Missing keys fall back to DEFAULTS.
+"""Settings live in config.toml (one file, also used by Docker). It is optional: without it, or for
+missing keys, DEFAULTS apply.
 
 PEPAR_* environment variables still override the file for advanced use; the Docker image sets only
 container facts with them (listen on 0.0.0.0:8765, cache in /app/cache).
@@ -6,6 +7,7 @@ container facts with them (listen on 0.0.0.0:8765, cache in /app/cache).
 
 import ipaddress
 import os
+import sys
 import tomllib
 from pathlib import Path
 
@@ -26,7 +28,12 @@ DEFAULTS = {
 def _load() -> dict:
     path = Path(os.environ.get("PEPAR_CONFIG", ROOT / "config.toml"))
     cfg = dict(DEFAULTS)
-    if path.exists():
+    if path.is_dir():
+        # 예전 compose.yml은 config.toml 파일 하나를 연결했는데, 파일이 없으면 Docker가 그 이름으로 빈 폴더를 만든다
+        print(f"Ignoring {path}: it is a directory, not a file (Docker creates one when a mounted file is missing). "
+              "Remove it (rmdir config.toml) and copy config.example.toml to config.toml to change settings.",
+              file=sys.stderr, flush=True)
+    elif path.exists():
         try:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
