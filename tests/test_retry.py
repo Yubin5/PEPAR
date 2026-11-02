@@ -13,11 +13,13 @@ class RetryFailedTest(unittest.TestCase):
         self.client = pepar.app.test_client()
         self.calls = []
         self.langs = []
+        self.texts = []
 
-        def fake_run(src, model, progress, checkpoint=None, retry_url=None, label=None, lang="ko"):
+        def fake_run(src, model, progress, checkpoint=None, retry_url=None, label=None, lang="ko", text=None):
             saved = json.loads(checkpoint.read_text()) if checkpoint and checkpoint.exists() else None
             self.calls.append({"model": model, "label": label, "checkpoint": saved})
             self.langs.append(lang)
+            self.texts.append(text)
             progress("translating", 1, 1)
             return src.key + "v1", "t", "<html></html>", 0
 
@@ -99,6 +101,30 @@ class RetryFailedTest(unittest.TestCase):
         self.wait()
         self.assertEqual(self.calls, [])
         self.assertEqual(pepar.jobs[f"a@x-00000000/{KEY}"]["stage"], "error")
+
+    def test_pasted_text(self):
+        body = "First line of the text\n\nSecond paragraph."
+        r = self.client.post("/text", data={"model": "a", "lang": "en", "text": body})
+        key = r.headers["Location"].rsplit("/", 1)[1]
+        self.assertTrue(key.startswith("t-"))
+        self.assertEqual(r.headers["Location"], f"/view/a@en/{key}")
+        self.assertEqual(self.client.get(f"/text/{key}").get_data(as_text=True), body)
+        # 같은 글은 같은 key
+        r2 = self.client.post("/text", data={"model": "a", "lang": "en", "text": body + "\n"})
+        self.assertEqual(r2.headers["Location"], r.headers["Location"])
+        self.client.get(f"/view/a@en/{key}")
+        self.wait()
+        self.assertEqual(self.texts, [body])
+        self.assertEqual(self.langs, ["en"])
+        doc = next(d for d in self.client.get("/api/docs").get_json() if d["key"].startswith(key))  # 가짜 run은 key에 v1을 붙인다
+        self.assertEqual((doc["where"], doc["lang"]), ("텍스트", "en"))
+        # 마지막 번역을 지우면 원문 텍스트도 지운다
+        (pepar.model_dir("a@en") / f"{key}.html").write_text("<html></html>")
+        self.assertEqual(self.client.delete(f"/api/docs/a@en/{key}").status_code, 200)
+        self.assertFalse(pepar.text_path(key).exists())
+
+    def test_empty_text_rejected(self):
+        self.assertEqual(self.client.post("/text", data={"model": "a", "text": "  \n "}).status_code, 400)
 
     def test_bad_model_rejected(self):
         self.assertEqual(self.client.get(f"/view/a/{KEY}?retry_failed=1&with=../x").status_code, 400)

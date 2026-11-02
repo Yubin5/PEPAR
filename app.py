@@ -30,8 +30,10 @@ CACHE.mkdir(parents=True, exist_ok=True)
 SOURCES = CACHE / "sources.json"  # web key는 해시라 URL을 따로 기록
 IMAGES = CACHE / "images"
 IMAGES.mkdir(exist_ok=True)
+TEXTS = CACHE / "texts"  # 붙여넣은 텍스트 t-<hash>.txt
+TEXTS.mkdir(exist_ok=True)
 CUSTOM_LANGS = CACHE / "langs.json"  # 직접 입력한 언어: 코드 → 입력한 글
-KEY_RE = re.compile(r"^(\d{4}\.\d{4,5}(v\d+)?|[wi]-[0-9a-f]{12})$")
+KEY_RE = re.compile(r"^(\d{4}\.\d{4,5}(v\d+)?|[wit]-[0-9a-f]{12})$")  # w-웹, i-이미지, t-텍스트
 # URL·캐시 폴더에 쓰는 "모델 칸": 한국어는 모델 이름 그대로(예전 결과와 같은 자리), 다른 언어는 "모델@언어"
 # 직접 입력한 언어는 "모델@x-<해시>" (이름은 cache/langs.json)
 MODEL_RE = re.compile(r"^[\w.\-]+(@([a-z]{2}|x-[0-9a-f]{8}))?$")
@@ -62,6 +64,7 @@ sec_per_block = 7.0
 # cache/<model>/<key>.meta.json   번역 시각·제목·URL·블록 수 등
 # cache/<model>/<key>.partial.json 이어서 번역하기 위한 체크포인트 (이미지는 OCR 결과도)
 # cache/images/<key>.<png|jpg>    업로드한 이미지
+# cache/texts/<key>.txt           붙여넣은 텍스트
 
 
 def load_sources() -> dict:
@@ -85,6 +88,8 @@ def source_for(key: str) -> translator.Source | None:
         return translator.Source("web", key, info["url"]) if info else None
     if key.startswith("i-"):
         return translator.Source("image", key, f"/image/{key}") if image_path(key) else None
+    if key.startswith("t-"):
+        return translator.Source("text", key, f"/text/{key}") if text_path(key).exists() else None
     return translator.Source("arxiv", key, key)
 
 
@@ -92,12 +97,16 @@ def source_url(key: str) -> str:
     src = source_for(key)
     if not src:
         return ""
-    return src.url if src.kind in ("web", "image") else f"https://arxiv.org/abs/{key}"
+    return src.url if src.kind in ("web", "image", "text") else f"https://arxiv.org/abs/{key}"
 
 
 def image_path(key: str) -> Path | None:
     found = list(IMAGES.glob(f"{key}.*"))
     return found[0] if found else None
+
+
+def text_path(key: str) -> Path:
+    return TEXTS / f"{key}.txt"
 
 
 def image_name(key: str) -> str:
@@ -160,7 +169,7 @@ def model_dir(model: str) -> Path:
 def cached_path(model: str, key: str) -> Path | None:
     """arXiv는 버전 지정 시 그 버전, 아니면 캐시된 것 중 최신 버전."""
     d = CACHE / model
-    if key.startswith(("w-", "i-")) or "v" in key:
+    if key.startswith(("w-", "i-", "t-")) or "v" in key:
         p = d / f"{key}.html"
         return p if p.exists() else None
     found = sorted(d.glob(f"{key}v*.html"), key=lambda p: int(p.stem.split("v")[-1]))
@@ -169,6 +178,16 @@ def cached_path(model: str, key: str) -> Path | None:
 
 def checkpoint_path(model: str, key: str) -> Path:
     return model_dir(model) / f"{key}.partial.json"
+
+
+def where_of(key: str, url: str) -> str:
+    if key.startswith("i-"):
+        return "이미지"
+    if key.startswith("t-"):
+        return "텍스트"
+    if key.startswith("w-"):
+        return urlparse(url).hostname or "web"
+    return "arXiv"
 
 
 def doc_info(p: Path, sources: dict) -> dict:
@@ -194,7 +213,7 @@ def doc_info(p: Path, sources: dict) -> dict:
         "key": key,
         "title": title,
         "url": url,
-        "where": "이미지" if key.startswith("i-") else "arXiv" if not key.startswith("w-") else (urlparse(url).hostname or "web"),
+        "where": where_of(key, url),
         "translated_at": meta.get("translated_at") or datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds"),
         "blocks": meta.get("blocks"),
         "failed": meta.get("failed"),
@@ -255,8 +274,9 @@ def worker():
                 html, failed = translate_image(model, key, title, progress, checkpoint, retry_url, llm, lang)
             else:
                 label = slot_label(model) if llm == base else f"{slot_label(model)} + {llm}"
+                text = text_path(key).read_text(encoding="utf-8") if src.kind == "text" else None
                 resolved, title, html, failed = translator.run(
-                    src, llm, progress, checkpoint=checkpoint, retry_url=retry_url, label=label, lang=lang,
+                    src, llm, progress, checkpoint=checkpoint, retry_url=retry_url, label=label, lang=lang, text=text,
                 )
             out = model_dir(model) / f"{resolved}.html"
             out.write_text(html, encoding="utf-8")
@@ -579,7 +599,7 @@ def index():
     models, models_error = get_models()
     return render_template(
         "index.html", models=models, models_error=models_error, default_model=translator.pick_default_model(models),
-        langs=translator.LANGS, default_lang=translator.DEFAULT_LANG, auth=bool(PASSWORD),
+        langs=translator.LANGS, default_lang=translator.DEFAULT_LANG, text_max=translator.TEXT_MAX, auth=bool(PASSWORD),
     )
 
 
@@ -642,6 +662,43 @@ def upload():
 MAX_UPLOAD_READ = ocr.MAX_UPLOAD + 1  # 한도 초과를 알 수 있도록 1바이트 더 읽는다
 
 
+@app.post("/text")
+def paste_text():
+    """붙여넣은 텍스트를 저장하고 번역 화면으로. 같은 글은 같은 key라 캐시를 다시 쓴다."""
+    def fail(msg):
+        return render_template("progress.html", error=msg, model="", key="", src_url=""), 400
+
+    try:
+        model = pick_model(request.form.get("model"))
+        if not MODEL_RE.match(model) or "@" in model:
+            abort(400)
+        lang = pick_lang(request.form.get("lang"), request.form.get("lang_text"))
+    except translator.PeparError as e:
+        return fail(str(e))
+    text = request.form.get("text", "").replace("\r\n", "\n").strip()
+    if not text:
+        return fail("번역할 텍스트를 입력해 주세요.")
+    if len(text) > translator.TEXT_MAX:
+        return fail(f"텍스트가 너무 깁니다 (최대 {translator.TEXT_MAX:,}자).")
+    key = "t-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    path = text_path(key)
+    if not path.exists():
+        path.write_text(text, encoding="utf-8")
+    with sources_lock:
+        sources = load_sources()
+        first = next(line for line in text.splitlines() if line.strip())
+        sources[key] = {"kind": "text", "url": f"/text/{key}", "name": " ".join(first.split())[:80]}
+        SOURCES.write_text(json.dumps(sources, ensure_ascii=False, indent=1), encoding="utf-8")
+    return redirect(url_for("view", model=slot_for(model, lang), key=key))
+
+
+@app.get("/text/<key>")
+def raw_text(key):
+    if not KEY_RE.match(key) or not key.startswith("t-") or not text_path(key).exists():
+        abort(404)
+    return send_file(text_path(key), mimetype="text/plain; charset=utf-8", max_age=86400)
+
+
 @app.get("/image/<key>")
 def image(key):
     if not KEY_RE.match(key) or not key.startswith("i-"):
@@ -678,7 +735,7 @@ def view(model, key):
         if path:
             return path.read_text(encoding="utf-8")
         start_job(model, key)  # 처음이거나 지난번에 실패했으면 이어서 시도
-    title = image_name(key) if key.startswith("i-") else ""
+    title = image_name(key) if key.startswith(("i-", "t-")) else ""
     return render_template("progress.html", error="", model=model, label=slot_label(model), key=key, src_url=source_url(key), title=title)
 
 
@@ -720,9 +777,11 @@ def api_delete_doc(model, key):
     jobs.pop(f"{model}/{key}", None)
     if d.exists() and not any(d.iterdir()):
         d.rmdir()
-    others = [p for p in CACHE.glob(f"*/{key}.*") if p.parent != IMAGES]
+    others = [p for p in CACHE.glob(f"*/{key}.*") if p.parent not in (IMAGES, TEXTS)]
     if key.startswith("i-") and not others and (p := image_path(key)):
         p.unlink()  # 이 이미지를 번역한 모델이 더 없으면 원본도 지운다
+    if key.startswith("t-") and not others:
+        text_path(key).unlink(missing_ok=True)  # 텍스트도 마찬가지
     if not removed:
         return jsonify(error="문서를 찾지 못했습니다."), 404
     return jsonify(ok=True)

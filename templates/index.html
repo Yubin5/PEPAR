@@ -81,7 +81,11 @@
   .chips { margin: 0 0 10px; }
   .chips .n { opacity: .7; margin-left: 4px; font-variant-numeric: tabular-nums; }
 
-  .kind-doc { --k: #2e8b57; } .kind-image { --k: #8e44ad; }
+  .kind-doc { --k: #2e8b57; } .kind-image { --k: #8e44ad; } .kind-text { --k: #c27c0e; }
+  textarea { width: 100%; min-height: 160px; padding: 12px 14px; font: inherit; line-height: 1.6; resize: vertical;
+    border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  .text-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
+  .text-actions .count { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
   .tag.kind { color: color-mix(in srgb, var(--k) 70%, var(--fg)); border-color: color-mix(in srgb, var(--k) 45%, transparent);
     background: color-mix(in srgb, var(--k) 10%, transparent); }
   .thumb { flex: none; width: 56px; height: 56px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); background: var(--line); }
@@ -122,6 +126,7 @@
     <div class="tabs" role="tablist" aria-label="번역할 대상">
       <button type="button" role="tab" id="tab-url" data-tab="url" aria-selected="true">문서</button>
       <button type="button" role="tab" id="tab-image" data-tab="image" aria-selected="false">이미지</button>
+      <button type="button" role="tab" id="tab-text" data-tab="text" aria-selected="false">텍스트</button>
     </div>
     <form action="/open" method="get" id="form">
       <div id="panel-url">
@@ -139,6 +144,13 @@
         </div>
         <p class="hint warn" id="vision-warn" hidden>이 모델은 이미지를 읽지 못합니다. 「· 이미지」가 붙은 모델을 고르세요.</p>
       </div>
+      <div id="panel-text" hidden>
+        <textarea name="text" id="text" maxlength="{{ text_max }}" placeholder="번역할 글을 붙여넣으세요. 빈 줄로 문단을 나눕니다."></textarea>
+        <div class="text-actions">
+          <span class="count" id="text-count"></span>
+          <button type="submit" id="text-submit" formaction="/text" formmethod="post" formnovalidate>텍스트 번역</button>
+        </div>
+      </div>
     </form>
   </div>
 
@@ -152,6 +164,7 @@
     <div class="chips" id="kind-filter" role="group" aria-label="표시할 종류">
       <button type="button" data-kind="doc" aria-pressed="true">문서<span class="n"></span></button>
       <button type="button" data-kind="image" aria-pressed="true">이미지<span class="n"></span></button>
+      <button type="button" data-kind="text" aria-pressed="true">텍스트<span class="n"></span></button>
     </div>
     <input id="search" type="search" placeholder="검색">
     <ul id="docs"></ul>
@@ -218,13 +231,25 @@
     for (const b of document.querySelectorAll('.tabs [data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
     $('panel-url').hidden = name !== 'url';
     $('panel-image').hidden = name !== 'image';
+    $('panel-text').hidden = name !== 'text';
     updateVisionWarn();
     try { localStorage.setItem('pepar-tab', name); } catch {}
   };
   const updateVisionWarn = () => { $('vision-warn').hidden = !!sel.selectedOptions[0]?.dataset.vision || !sel.options.length; };
   for (const b of document.querySelectorAll('.tabs [data-tab]')) b.addEventListener('click', () => setTab(b.dataset.tab));
   sel.addEventListener('change', updateVisionWarn);
-  try { if (localStorage.getItem('pepar-tab') === 'image') setTab('image'); } catch {}
+  try { const t = localStorage.getItem('pepar-tab'); if (t === 'image' || t === 'text') setTab(t); } catch {}
+
+  // 텍스트: 글자 수 표시, 입력 중인 글은 브라우저에 임시 저장
+  const textArea = $('text');
+  const TEXT_MAX = {{ text_max }};
+  const showCount = () => {
+    const n = textArea.value.length;
+    $('text-count').textContent = n ? `${n.toLocaleString()} / ${TEXT_MAX.toLocaleString()}자` : '';
+  };
+  try { textArea.value = localStorage.getItem('pepar-text-draft') || ''; } catch {}
+  textArea.addEventListener('input', () => { showCount(); try { localStorage.setItem('pepar-text-draft', textArea.value); } catch {} });
+  showCount();
 
   const fileInput = $('image');
   const showFile = () => {
@@ -262,8 +287,15 @@
       langText.focus();
       return;
     }
+    if (e.submitter?.id === 'text-submit' && !textArea.value.trim()) {
+      e.preventDefault();
+      textArea.focus();
+      return;
+    }
+    // 고른 방식에 필요한 것만 보낸다 (주소 번역에 긴 텍스트가 주소창으로 실려 가지 않도록)
     if (e.submitter?.id !== 'image-submit') fileInput.disabled = true;
-    setTimeout(() => { fileInput.disabled = false; });
+    if (e.submitter?.id !== 'text-submit') textArea.disabled = true;
+    setTimeout(() => { fileInput.disabled = false; textArea.disabled = false; });
   });
   const el = (tag, props = {}, ...kids) => {
     const e = document.createElement(tag);
@@ -275,8 +307,8 @@
                  : s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
   const host = u => { try { return new URL(u).hostname; } catch { return u || ''; } };
   // key 접두사 i-는 이미지, 그 외는 문서
-  const kindOf = key => key.startsWith('i-') ? 'image' : 'doc';
-  const KIND_LABEL = { doc: '문서', image: '이미지' };
+  const kindOf = key => key.startsWith('i-') ? 'image' : key.startsWith('t-') ? 'text' : 'doc';
+  const KIND_LABEL = { doc: '문서', image: '이미지', text: '텍스트' };
   const sourceOf = (key, url) => key.startsWith('w-') ? host(url) : 'arXiv';
   const kindTag = key => el('span', { className: `tag kind kind-${kindOf(key)}`, textContent: KIND_LABEL[kindOf(key)] });
 
@@ -381,7 +413,7 @@
     renderDocs();
   }
 
-  let kinds = new Set(['doc', 'image']);
+  let kinds = new Set(['doc', 'image', 'text']);
   try { const s = JSON.parse(localStorage.getItem('pepar-kinds')); if (Array.isArray(s)) kinds = new Set(s.filter(k => k in KIND_LABEL)); } catch {}
   for (const b of document.querySelectorAll('#kind-filter [data-kind]')) b.addEventListener('click', () => {
     kinds.has(b.dataset.kind) ? kinds.delete(b.dataset.kind) : kinds.add(b.dataset.kind);
@@ -397,14 +429,14 @@
       const hay = `${d.title} ${d.where} ${KIND_LABEL[kindOf(d.key)]} ${d.model} ${d.lang_name} ${d.url} ${d.key}`.toLowerCase();
       return terms.every(t => hay.includes(t)) || contentHits.has(`${d.model}/${d.key}`);
     });
-    const counts = { doc: 0, image: 0 };
+    const counts = { doc: 0, image: 0, text: 0 };
     for (const d of matched) counts[kindOf(d.key)]++;
     for (const b of document.querySelectorAll('#kind-filter [data-kind]')) {
       b.setAttribute('aria-pressed', String(kinds.has(b.dataset.kind)));
       b.querySelector('.n').textContent = counts[b.dataset.kind];
     }
     const shown = matched.filter(d => kinds.has(kindOf(d.key)));
-    $('docs-count').textContent = terms.length || kinds.size < 2 ? `${shown.length} / ${docs.length}개` : `${docs.length}개`;
+    $('docs-count').textContent = terms.length || kinds.size < Object.keys(KIND_LABEL).length ? `${shown.length} / ${docs.length}개` : `${docs.length}개`;
     if (!shown.length) {
       const msg = !docs.length ? '아직 번역한 문서가 없습니다.' : !kinds.size ? '표시할 종류를 하나 이상 켜 주세요.'
                 : terms.length ? '검색 결과가 없습니다.' : '선택한 종류의 번역 결과가 없습니다.';

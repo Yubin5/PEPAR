@@ -23,7 +23,7 @@ class CancelTest(unittest.TestCase):
         self.release = threading.Event()
         test = self
 
-        def slow_run(src, model, progress, checkpoint=None, retry_url=None, label=None, lang="ko"):
+        def slow_run(src, model, progress, checkpoint=None, retry_url=None, label=None, lang="ko", text=None):
             for i in range(200):
                 progress("translating", i, 200)
                 test.batches += 1

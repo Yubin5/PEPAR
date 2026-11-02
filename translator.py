@@ -222,6 +222,86 @@ def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: s
     return doc
 
 
+# ---------------------------------------------------------------- 붙여넣은 텍스트
+
+TEXT_MAX = 200_000  # 글자 수
+_BULLET = re.compile(r"^\s*([-*•·▪◦‣]|\d+[.)]|[a-zA-Z][.)])\s")
+_CJK_END = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7a3]")
+TEXT_CSS = """
+  :root { --bg: #fafaf9; --fg: #1c1a17; --muted: #6b6760; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ecebe8; --muted: #9c9890; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.75 system-ui, "Pretendard", "Noto Sans KR", sans-serif; }
+  main.pepar-text { max-width: 760px; margin: 0 auto; padding: 40px 16px 120px; }
+  .para { margin: 0 0 1.1em; } .para p { margin: 0; overflow-wrap: anywhere; }
+"""
+
+
+def _width(line: str) -> int:
+    """글줄의 대략적인 폭. 한중일 문자는 라틴 문자 두 개 폭."""
+    return len(line) + len(_CJK_END.findall(line))
+
+
+def _hard_wrapped(lines: list[str]) -> bool:
+    """PDF 등에서 복사해 일정한 폭에서 끊긴 줄들인지: 마지막 줄 말고는 모두 가장 긴 줄의 75% 이상.
+    시나 주소처럼 길이가 들쭉날쭉한 줄은 아니라고 본다."""
+    widths = [_width(line) for line in lines]
+    top = max(widths)
+    return top >= 30 and all(w >= 0.75 * top for w in widths[:-1])
+
+
+def text_paragraphs(text: str) -> list[list[str]]:
+    """붙여넣은 텍스트 → 문단(빈 줄로 구분)마다 줄 목록. 일정한 폭에서 끊긴 줄은 복사하며 생긴 줄바꿈으로 보고 잇고,
+    목록이나 시·주소처럼 줄마다 의미가 있는 것은 줄을 그대로 둔다."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    paras = []
+    for block in re.split(r"\n\s*\n", text):
+        lines = [" ".join(line.split()) for line in block.split("\n") if line.strip()]
+        if not lines:
+            continue
+        if len(lines) > 1 and (any(_BULLET.match(line) for line in lines) or not _hard_wrapped(lines)):
+            paras.append(lines)
+            continue
+        joined = lines[0]
+        for line in lines[1:]:
+            if joined.endswith("-") and line[:1].islower():
+                joined = joined[:-1] + line  # 줄 끝에서 끊긴 낱말
+            else:
+                joined += ("" if _CJK_END.match(joined[-1]) and _CJK_END.match(line[0]) else " ") + line
+        paras.append([joined])
+    return paras
+
+
+def load_text(src: Source, text: str, lang: str = "ko") -> Doc:
+    if len(text) > TEXT_MAX:
+        raise PeparError(f"텍스트가 너무 깁니다 (최대 {TEXT_MAX:,}자).")
+    paras = text_paragraphs(text)
+    if not paras:
+        raise PeparError("번역할 텍스트가 비어 있습니다.")
+    title = paras[0][0][:80]
+    soup = BeautifulSoup(
+        f"<!doctype html><html><head><title></title><style>{TEXT_CSS}</style></head>"
+        '<body><main class="pepar-text"></main></body></html>',
+        "lxml",
+    )
+    soup.title.string = title
+    main = soup.select_one("main")
+    for lines in paras:
+        div = soup.new_tag("div", attrs={"class": "para"})
+        for line in lines:
+            p = soup.new_tag("p")
+            p.string = line
+            div.append(p)
+        main.append(div)
+    doc = Doc(soup, src.url, src.key, "text", title, "Beginning of the text: " + text[:1200], lang=lang)
+    for p in main.select("p"):
+        _add_item(doc, p, "br", None)
+        if len(doc.items) > MAX_BLOCKS:
+            raise PeparError(f"텍스트가 너무 깁니다 (번역 블록 {MAX_BLOCKS}개 초과).")
+    if not doc.items:
+        raise PeparError("번역할 글자가 없습니다. 이미 번역할 언어로 된 글일 수 있습니다.")
+    return doc
+
+
 SEG_CLASS = "pepar-seg"
 
 
@@ -249,7 +329,9 @@ def _split_at_br(soup, el):
     return units
 
 
-def load(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: str = "ko") -> Doc:
+def load(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: str = "ko", text: str | None = None) -> Doc:
+    if src.kind == "text":
+        return load_text(src, text or "", lang)
     return load_arxiv(src, lang) if src.kind == "arxiv" else load_web(src, keep_scripts, lang)
 
 
@@ -383,6 +465,8 @@ STYLE = {
         "arxiv": "This is an academic paper: use the written plain style (である調), not です・ます調.",
     },
     "*": {
+        "text": "This is plain text pasted by the user. Keep its tone and register (formal or casual, polite or plain) "
+        "and keep list markers and numbering.",
         "arxiv": "This is an academic paper: use a formal academic register.",
         "web": "Use natural written prose; translate short UI labels and headings concisely.",
     },
@@ -579,6 +663,27 @@ PEPAR_SCRIPT = """
     btn.textContent = showingOrig ? '번역 보기' : '원문 보기';
   });
 
+  // 텍스트 번역: 지금 보이는 쪽(번역 또는 원문)을 문단 구분을 살려 복사한다
+  const copyBtn = document.getElementById('pepar-copy');
+  if (copyBtn) copyBtn.addEventListener('click', async () => {
+    const text = [...document.querySelectorAll('main.pepar-text .para')]
+      .map(d => [...d.querySelectorAll('p')].map(p => p.textContent).join('\\n')).join('\\n\\n');
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch {}
+    if (!ok) {  // http로 접속하면 clipboard API를 쓸 수 없다
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.append(ta);
+      ta.select();
+      try { ok = document.execCommand('copy'); } catch {}
+      ta.remove();
+    }
+    const label = copyBtn.textContent;
+    copyBtn.textContent = ok ? '복사됨' : '복사 실패';
+    setTimeout(() => { copyBtn.textContent = label; }, 1500);
+  });
+
   if (!cfg.map) return;
 
   // 스크립트 유지 모드: 사이트 스크립트가 블록을 원문으로 다시 그리면, 원문 텍스트로 번역을 찾아 다시 입힌다
@@ -614,7 +719,8 @@ PEPAR_SCRIPT = """
 
 
 def _bar_html(doc: "Doc", model: str, home: str, failed: int, retry_url: str | None) -> str:
-    src_label = "arXiv 원문" if doc.kind == "arxiv" else "원문 페이지"
+    src_label = {"arxiv": "arXiv 원문", "text": "원문 텍스트"}.get(doc.kind, "원문 페이지")
+    copy = '<button id="pepar-copy" type="button">복사</button>' if doc.kind == "text" else ""
     retry = ""
     if failed and retry_url:
         retry = f'<a class="pepar-retry" href="{html_escape(retry_url)}" title="번역에 실패한 블록만 다시 번역">실패 {failed}블록 재번역</a>'
@@ -624,6 +730,7 @@ def _bar_html(doc: "Doc", model: str, home: str, failed: int, retry_url: str | N
         f"{retry}"
         f'<a href="{html_escape(home)}">PEPAR</a>'
         f'<a href="{html_escape(doc.url)}" target="_blank" rel="noopener">{src_label}</a>'
+        f"{copy}"
         '<button id="pepar-toggle" type="button">원문 보기</button>'
         "</div>"
     )
@@ -739,10 +846,11 @@ def run(
     retry_url: str | None = None,
     label: str | None = None,
     lang: str = "ko",
+    text: str | None = None,
 ):
     """(key, 제목, 번역 HTML, 실패 블록 수). checkpoint에는 묶음마다 {원문: 번역문}을 저장해 끊겨도 이어서 번역한다. label은 결과 페이지에 표시할 모델 이름."""
     on_progress("fetching", 0, 0)
-    doc = load(src, keep_scripts, lang)
+    doc = load(src, keep_scripts, lang, text)
     items = doc.items
     total = len(items)
     system = system_prompt(doc.context, doc.kind, lang)
