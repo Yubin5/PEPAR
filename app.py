@@ -684,7 +684,10 @@ def open_link():
         if not MODEL_RE.match(model) or "@" in model:
             abort(400)
         lang = pick_lang(request.args.get("lang"), request.args.get("lang_text"))
-        src = translator.parse_source(request.args.get("url") or request.args.get("pdf_url", ""))  # pdf_url: PDF 탭의 링크 칸
+        if request.args.get("url"):
+            src = translator.parse_source(request.args["url"])
+        else:  # PDF 탭의 링크 칸: arXiv도 PDF로
+            src = translator.parse_source(request.args.get("pdf_url", ""), pdf=True)
     except translator.PeparError as e:
         return render_template("progress.html", error=str(e), model="", key="", src_url=""), 400
     remember_source(src)

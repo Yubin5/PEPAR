@@ -66,13 +66,18 @@ def unwrap_viewer(url: str) -> str:
     return url
 
 
-def parse_source(text: str) -> Source:
+def _web(url: str) -> Source:
+    return Source("web", "w-" + hashlib.sha1(url.encode()).hexdigest()[:12], url)
+
+
+def parse_source(text: str, pdf: bool = False) -> Source:
+    """pdf: PDF 탭의 링크 칸. arXiv도 웹(HTML) 버전이 아니라 그 논문의 PDF를 번역한다."""
     text = text.strip()
     if not text:
         raise PeparError("URL이나 arXiv ID를 입력해 주세요.")
     m = BARE_ARXIV_ID.match(text)
     if m:
-        return Source("arxiv", m.group(1), m.group(1))
+        return _web(f"https://arxiv.org/pdf/{m.group(1)}") if pdf else Source("arxiv", m.group(1), m.group(1))
     if not re.match(r"^https?://", text, re.I):
         if " " in text or "." not in text:
             raise PeparError("URL이나 arXiv ID를 인식하지 못했습니다.")
@@ -83,11 +88,11 @@ def parse_source(text: str) -> Source:
         if not m:
             raise PeparError("arXiv 링크에서 논문 ID를 찾지 못했습니다.")
         arxiv_id = m.group(1) + (m.group(2) or "")
-        return Source("arxiv", arxiv_id, arxiv_id)
+        return _web(f"https://arxiv.org/pdf/{arxiv_id}") if pdf else Source("arxiv", arxiv_id, arxiv_id)
     url = urldefrag(unwrap_viewer(text))[0]
     if url != urldefrag(text)[0] and not re.match(r"^https?://", url, re.I):
         raise PeparError("PDF 뷰어 주소에서 PDF 파일 주소를 찾지 못했습니다.")
-    return Source("web", "w-" + hashlib.sha1(url.encode()).hexdigest()[:12], url)
+    return _web(url)
 
 
 

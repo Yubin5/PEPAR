@@ -117,6 +117,15 @@ class ViewerUrlTest(unittest.TestCase):
         self.assertEqual(r.status_code, 302)
         self.assertEqual(r.headers["Location"], f"/view/a/{translator.parse_source('https://y.org/b.pdf').key}")
 
+    def test_arxiv_in_pdf_tab_is_translated_as_pdf(self):
+        # 문서 탭은 arXiv 웹(HTML) 버전, PDF 탭 링크 칸은 PDF
+        self.assertEqual(translator.parse_source("https://arxiv.org/pdf/1706.03762").kind, "arxiv")
+        for text in ("https://arxiv.org/pdf/1706.03762", "https://arxiv.org/abs/1706.03762", "1706.03762"):
+            src = translator.parse_source(text, pdf=True)
+            self.assertEqual((src.kind, src.url), ("web", "https://arxiv.org/pdf/1706.03762"))
+        r = pepar.app.test_client().get("/open?model=a&url=&pdf_url=https://arxiv.org/pdf/1706.03762")
+        self.assertEqual(r.headers["Location"], f"/view/a/{translator.parse_source('1706.03762', pdf=True).key}")
+
     def test_unwrap(self):
         self.assertEqual(translator.parse_source("https://x.org/pdfjs/web/viewer.html?file=/files/a.pdf").url, "https://x.org/files/a.pdf")
         self.assertEqual(translator.parse_source("https://docs.google.com/viewer?url=https://y.org/b.pdf&embedded=true").url, "https://y.org/b.pdf")
