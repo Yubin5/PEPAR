@@ -44,6 +44,9 @@
   td:first-child { color: var(--muted); width: 45%; }
   tr:hover td { background: var(--card); }
   td.none { color: var(--muted); font-style: italic; }
+  /* PDF 문단 속 수식: 원본처럼 세리프·이탤릭·위아래첨자로. 줄을 바꿀 때 수식 중간에서 끊지 않는다 */
+  .m { font-family: "Times New Roman", "Nimbus Roman", "Liberation Serif", serif; white-space: nowrap; }
+  .m sup, .m sub { font-size: .7em; line-height: 0; }
 </style>
 </head>
 <body>
@@ -77,7 +80,7 @@
     {% for pg in pages %}{% set p = loop.index0 %}
     {% if multi %}<tr class="page"><td colspan="2">{{ loop.index }}쪽</td></tr>{% endif %}
     {% for lb in pg.labels %}
-    <tr data-p="{{ p }}" data-i="{{ loop.index0 }}"><td>{{ lb.text }}</td>{% if lb.ko %}<td>{{ lb.ko }}</td>{% else %}<td class="none">원문 유지</td>{% endif %}</tr>
+    <tr data-p="{{ p }}" data-i="{{ loop.index0 }}"><td>{{ (lb.src or lb.text)|rich(lb.math) }}</td>{% if lb.ko %}<td>{{ lb.ko|rich(lb.math) }}</td>{% elif lb.keep %}<td class="none">수식 · 원문 유지</td>{% else %}<td class="none">원문 유지</td>{% endif %}</tr>
     {% endfor %}{% endfor %}
   </table>
   {% if multi %}</details>{% endif %}
@@ -94,6 +97,21 @@
     const orig = document.getElementById('pages').classList.toggle('orig');
     toggle.textContent = orig ? '번역 보기' : '원문 보기';
   });
+
+  // 번역문(PDF 문단의 수식 자리는 <x0/>) → 화면 요소. 수식은 이탤릭·위첨자·아래첨자로 다시 그린다
+  function mathNode(runs) {
+    const span = document.createElement('span');
+    span.className = 'm';
+    for (const [t, st] of runs || []) {
+      let node = document.createTextNode(t);
+      if (st.includes('i')) { const e = document.createElement('i'); e.append(node); node = e; }
+      if (/[\^_]/.test(st)) { const e = document.createElement(st.includes('^') ? 'sup' : 'sub'); e.append(node); node = e; }
+      span.append(node);
+    }
+    return span;
+  }
+  const fillRich = (n, text, math) =>
+    n.replaceChildren(...text.split(/<x(\d+)\/>/).map((part, k) => k % 2 ? mathNode(math?.[+part]) : part));
 
   // 쪽 하나(원본 그림 + 그 위 덮개)를 꾸민다
   function setupPage(stage, img, labels, nodes) {
@@ -216,14 +234,14 @@
       try { covers = analyze(); } catch { covers = fallback(); }  // 캔버스를 못 쓰면 기본 흰 바탕
       labels.forEach((lb, i) => {
         let n = null;
-        if (lb.ko && lb.ko !== lb.text) {  // 번역해도 그대로인 것(고유명사, 제품명)은 원본을 가리지 않는다
+        if (lb.ko && lb.ko !== (lb.src || lb.text)) {  // 번역해도 그대로인 것(고유명사, 제품명)은 원본을 가리지 않는다
           n = document.createElement('div');
           n.className = 'lb';
-          n.textContent = lb.ko;
+          fillRich(n, lb.ko, lb.math);
           n.title = '원문: ' + lb.text;
           if (covers[i].bg) { n.style.background = covers[i].bg; n.style.color = covers[i].fg; }
           if (covers[i].photo) { n.classList.add('photo'); n.style.textShadow = covers[i].shadow; }
-        } else if (!lb.ko && /[^\W\d_]{2}/u.test(lb.text) && {{ failed|tojson }}) {
+        } else if (!lb.ko && !lb.keep && /[^\W\d_]{2}/u.test(lb.text) && {{ failed|tojson }}) {
           n = document.createElement('div');
           n.className = 'fail';
           n.title = '번역 실패: ' + lb.text;
@@ -290,28 +308,87 @@
   const CJK = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/;
   const CJK_SPLIT = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]|[^\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]+/g;
 
-  // maxW 안에 들어가게 줄을 나눈다. 한국어·라틴 문자는 낱말 단위, 일본어·중국어 글자는 한 글자씩.
-  // 낱말 하나가 너무 길면 글자 단위로 자른다 (화면의 overflow-wrap: anywhere)
-  function wrapLines(ctx, text, maxW, wrap) {
-    if (!wrap) return [text];
-    const width = s => ctx.measureText(s.trim()).width;
-    const tokens = text.split(/(\s+)/).flatMap(w => !w ? [] : /^\s+$/.test(w) ? [' '] : !KEEP_ALL && CJK.test(w) ? w.match(CJK_SPLIT) : [w]);
+  const MATH_FONT = '"Times New Roman", "Nimbus Roman", "Liberation Serif", serif';  // .m과 같은 글꼴
+
+  // 번역문 → 조각: 글 낱말, 띄어쓰기, 수식([[글, 모양]] 덩어리. 줄을 바꿀 때 쪼개지 않는다).
+  // 한국어·라틴 문자는 낱말 단위, 일본어·중국어 글자는 한 글자씩
+  function pieces(text, math) {
+    const out = [];
+    text.split(/<x(\d+)\/>/).forEach((part, k) => {
+      if (k % 2) { out.push({ math: math?.[+part] || [] }); return; }
+      for (const w of part.split(/(\s+)/)) {
+        if (!w) continue;
+        if (/^\s+$/.test(w)) out.push({ sp: true });
+        else if (!KEEP_ALL && CJK.test(w)) out.push(...w.match(CJK_SPLIT).map(t => ({ t })));
+        else out.push({ t: w });
+      }
+    });
+    return out;
+  }
+
+  // 글자 모양별 글꼴. 위·아래첨자는 0.7배 (.m sup/sub와 같다)
+  const textFont = (size, weight) => `${weight} ${size}px ${FONT}`;
+  const runFont = (st, size, weight) =>
+    `${st.includes('i') ? 'italic ' : ''}${weight} ${/[\^_]/.test(st) ? size * 0.7 : size}px ${MATH_FONT}`;
+
+  function pieceWidth(ctx, p, size, weight) {
+    if (p.t !== undefined) { ctx.font = textFont(size, weight); return ctx.measureText(p.t).width; }
+    return p.math.reduce((w, [t, st]) => { ctx.font = runFont(st, size, weight); return w + ctx.measureText(t).width; }, 0);
+  }
+
+  // maxW 안에 들어가게 조각을 줄로 나눈다. 글 낱말 하나가 너무 길면 글자 단위로 자른다 (화면의 overflow-wrap: anywhere)
+  function layoutLines(ctx, ps, maxW, wrap, size, weight) {
+    if (!wrap) return [ps.filter((p, k) => !(p.sp && (k === 0 || k === ps.length - 1)))];
+    ctx.font = textFont(size, weight);
+    const spaceW = ctx.measureText(' ').width;
     const lines = [];
-    let cur = '';
-    const place = t => {
-      if (width(t) <= maxW) { cur = t; return; }
-      for (const ch of t) { if (cur && width(cur + ch) > maxW) { lines.push(cur); cur = ''; } cur += ch; }
-    };
-    for (const t of tokens) {
-      if (t === ' ') { if (cur) cur += ' '; continue; }
-      if (!cur.trim()) { cur = ''; place(t); continue; }
-      if (width(cur + t) <= maxW) { cur += t; continue; }
-      lines.push(cur.trim());
-      cur = '';
-      place(t);
+    let cur = [], curW = 0, space = false;
+    const push = () => { if (cur.length) lines.push(cur); cur = []; curW = 0; };
+    for (const p of ps) {
+      if (p.sp) { if (cur.length) space = true; continue; }
+      const pw = pieceWidth(ctx, p, size, weight);
+      if (cur.length && curW + (space ? spaceW : 0) + pw > maxW) push();
+      else if (cur.length && space) { cur.push({ sp: true }); curW += spaceW; }
+      space = false;
+      if (!cur.length && pw > maxW && p.t !== undefined) {
+        let part = '';
+        ctx.font = textFont(size, weight);
+        for (const ch of p.t) {
+          if (part && ctx.measureText(part + ch).width > maxW) { cur.push({ t: part }); push(); part = ''; }
+          part += ch;
+        }
+        if (part) { cur.push({ t: part }); ctx.font = textFont(size, weight); curW = ctx.measureText(part).width; }
+        continue;
+      }
+      cur.push(p);
+      curW += pw;
     }
-    if (cur.trim()) lines.push(cur.trim());
+    push();
     return lines;
+  }
+
+  function lineWidth(ctx, line, size, weight) {
+    ctx.font = textFont(size, weight);
+    const spaceW = ctx.measureText(' ').width;
+    return line.reduce((w, p) => w + (p.sp ? spaceW : pieceWidth(ctx, p, size, weight)), 0);
+  }
+
+  // 한 줄을 x에서부터 그린다. 위첨자는 위로, 아래첨자는 아래로 옮긴다
+  function drawLine(ctx, line, x, y, size, weight, c, s) {
+    ctx.font = textFont(size, weight);
+    const spaceW = ctx.measureText(' ').width;
+    const put = (t, font, dy) => {
+      ctx.font = font;
+      if (c.photo) { ctx.lineJoin = 'round'; ctx.lineWidth = 3 / s; ctx.strokeStyle = c.edge; ctx.strokeText(t, x, y + dy); }
+      ctx.fillStyle = c.fg || '#111';
+      ctx.fillText(t, x, y + dy);
+      x += ctx.measureText(t).width;
+    };
+    for (const p of line) {
+      if (p.sp) { x += spaceW; continue; }
+      if (p.t !== undefined) { put(p.t, textFont(size, weight), 0); continue; }
+      for (const [t, st] of p.math) put(t, runFont(st, size, weight), st.includes('^') ? -0.35 * size : st.includes('_') ? 0.2 * size : 0);
+    }
   }
 
   function drawPage(page) {
@@ -323,7 +400,7 @@
     const ctx = cv.getContext('2d');
     ctx.drawImage(img, 0, 0);
     labels.forEach((lb, i) => {
-      if (!lb.ko || lb.ko === lb.text) return;  // 화면에서도 덮지 않는 것
+      if (!lb.ko || lb.ko === (lb.src || lb.text)) return;  // 화면에서도 덮지 않는 것
       const c = covers[i];
       const [x1, y1, x2, y2] = c.rect;
       const bw = x2 - x1, bh = y2 - y1;
@@ -340,11 +417,11 @@
       ctx.fillRect(x1, y1, bw, bh);
       const multi = (lb.lines || 1) > 1, topLeft = multi && lb.align !== 'center';
       const weight = c.photo ? 800 : 500;
+      const ps = pieces(lb.ko, lb.math);
       let size = c.h * 0.9, wrap = multi, lines;
       const fits = () => {
-        ctx.font = `${weight} ${size}px ${FONT}`;
-        lines = wrapLines(ctx, lb.ko, bw, wrap);
-        return lines.every(l => ctx.measureText(l).width <= bw + 1) && lines.length * size * 1.15 <= bh + 1;
+        lines = layoutLines(ctx, ps, bw, wrap, size, weight);
+        return lines.every(l => lineWidth(ctx, l, size, weight) <= bw + 1) && lines.length * size * 1.15 <= bh + 1;
       };
       if (!multi) {
         while (!fits() && size > c.h * 0.6) size *= 0.92;
@@ -353,19 +430,11 @@
       while (!fits() && size > 7 / s) size *= 0.92;
       const lh = size * 1.15;
       const top = topLeft ? y1 : y1 + (bh - lines.length * lh) / 2;
-      const x = topLeft ? x1 : x1 + bw / 2;
-      ctx.textAlign = topLeft ? 'left' : 'center';
+      ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       lines.forEach((line, k) => {
-        const y = top + lh * k + lh / 2;
-        if (c.photo) {
-          ctx.lineJoin = 'round';
-          ctx.lineWidth = 3 / s;
-          ctx.strokeStyle = c.edge;
-          ctx.strokeText(line, x, y);
-        }
-        ctx.fillStyle = c.fg || '#111';
-        ctx.fillText(line, x, y);
+        const x = topLeft ? x1 : x1 + (bw - lineWidth(ctx, line, size, weight)) / 2;
+        drawLine(ctx, line, x, top + lh * k + lh / 2, size, weight, c, s);
       });
       ctx.restore();
     });

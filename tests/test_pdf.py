@@ -8,15 +8,17 @@ import pypdfium2 as pdfium  # noqa: E402
 import translator  # noqa: E402
 
 
-def make_pdf(lines: list[tuple[float, float, str]]) -> bytes:
-    """글자 레이어가 있는 한 쪽짜리 PDF. lines: [(x, y, 글)] (PDF 좌표, 왼쪽 아래 기준, 12pt Helvetica)."""
-    text = "".join(f"BT /F1 12 Tf {x} {y} Td ({t}) Tj ET\n" for x, y, t in lines).encode()
+def make_pdf(lines: list[tuple]) -> bytes:
+    """글자 레이어가 있는 한 쪽짜리 PDF. lines: [(x, y, 글[, 글꼴, 크기])] (PDF 좌표, 왼쪽 아래 기준).
+    글꼴 F1은 Helvetica(본문), F2는 CMMI10 (LaTeX 수식 이탤릭 이름; 수식 알아보기 시험용). 기본 F1 12pt."""
+    text = "".join(f"BT /{(l + ('F1', 12))[3]} {(l + ('F1', 12))[4]} Tf {l[0]} {l[1]} Td ({l[2]}) Tj ET\n" for l in lines).encode()
     objs = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>",
         b"<< /Length " + str(len(text)).encode() + b" >>\nstream\n" + text + b"endstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /CMMI10 >>",
     ]
     out, offsets = b"%PDF-1.4\n", []
     for n, body in enumerate(objs, 1):
@@ -40,12 +42,33 @@ class PageLinesTest(unittest.TestCase):
     def test_lines_and_paragraphs(self):
         pdf = pdfium.PdfDocument(SAMPLE)
         page = pdf[0]
-        lines = pdfdoc.page_lines(page)
+        lines, maths = pdfdoc.page_lines(page)
         self.assertEqual([ln["text"] for ln in lines][0], "A Short Title")
+        self.assertEqual(maths, [])
         W, H = page.get_size()
         blocks = pepar.ocr._blocks(lines, W, H, paragraphs=True)
         self.assertEqual(blocks[1]["text"], "This is the first line of a paragraph that is long enough and this line continues the same paragraph.")
         self.assertEqual(blocks[1]["lines"], 2)
+
+    def test_math_is_protected_or_kept(self):
+        # 문장 속 수식(CMMI 글꼴)은 <x0/>로 바꿔 번역하고, 위첨자는 모양으로 남긴다. 수식뿐인 줄은 번역하지 않는다
+        pdf = pdfium.PdfDocument(make_pdf([
+            (72, 700, "Let the matrix"), (152, 700, "W", "F2", 12), (164, 705, "Q", "F2", 8),
+            (175, 700, "be learned during training of the model."),
+            (72, 650, "y", "F2", 12), (84, 650, "=", "F2", 12), (96, 650, "x", "F2", 12),
+        ]))
+        page = pdf[0]
+        W, H = page.get_size()
+        lines, maths = pdfdoc.page_lines(page)
+        labels = pdfdoc.finish(pepar.ocr._blocks(lines, W, H, paragraphs=True), maths)
+        prose, eq = labels
+        self.assertEqual(prose["src"], "Let the matrix <x0/> be learned during training of the model.")
+        self.assertEqual(prose["math"], [[["W", "i"], ["Q", "i^"]]])
+        self.assertNotIn("keep", prose)
+        self.assertTrue(eq["keep"])
+        # 번역문의 수식 자리는 HTML로 다시 그린다
+        self.assertEqual(str(pepar.rich_text("행렬 <x0/>를 학습한다", prose["math"])),
+                         '행렬 <span class="m"><i>W</i><sup><i>Q</i></sup></span>를 학습한다')
 
     def test_check_rejects_non_pdf(self):
         with self.assertRaises(translator.PeparError):

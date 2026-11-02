@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
+from markupsafe import Markup, escape
 from PIL import Image
 from werkzeug.exceptions import HTTPException
 
@@ -670,6 +671,28 @@ def http_error(e: HTTPException):
     if request.path.startswith("/api/"):
         return jsonify(error=msg), e.code
     return render_template("progress.html", error=msg, model="", key="", src_url=""), e.code
+
+
+@app.template_filter("rich")
+def rich_text(text: str, math: list | None = None):
+    """번역 표시 <x0/>가 있는 글 → HTML. 수식은 이탤릭·위첨자·아래첨자로 (PDF 문단의 수식). 나머지는 이스케이프."""
+    out = []
+    for k, part in enumerate(re.split(r"<x(\d+)/>", text or "")):
+        if k % 2 == 0:
+            out.append(escape(part))
+            continue
+        runs = (math or [])[int(part)] if int(part) < len(math or []) else []
+        html = []
+        for t, style in runs:
+            h = escape(t)
+            if "i" in style:
+                h = Markup("<i>") + h + Markup("</i>")
+            if "^" in style or "_" in style:
+                tag = "sup" if "^" in style else "sub"
+                h = Markup(f"<{tag}>") + h + Markup(f"</{tag}>")
+            html.append(h)
+        out.append(Markup('<span class="m">') + Markup("").join(html) + Markup("</span>"))
+    return Markup("").join(out)
 
 
 @app.get("/<any('favicon.ico', 'favicon.svg', 'apple-touch-icon.png'):name>")

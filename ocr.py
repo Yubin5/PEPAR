@@ -385,11 +385,16 @@ def run(model: str, data: bytes, on_progress, checkpoint=None, lang: str = "ko")
 def translate_labels(model: str, labels: list[dict], on_progress, lang: str, kind: str, save=lambda: None) -> int:
     """라벨마다 번역문을 "ko" 키에 채운다 (언어와 상관없이 이 키: 예전 결과 파일과 맞추려고). 이미 있는 것은 건너뛴다.
     숫자·기호뿐인 라벨은 번역할 게 없으니 원문 그대로 둔다. 묶음마다 save()를 부른다. 실패한 라벨 수를 돌려준다."""
-    todo = [i for i, lb in enumerate(labels) if "ko" not in lb and translator.worth(lb["text"], lang)]
-    items = [{"text": lb["text"]} for lb in labels]
+    # PDF 문단에 수식이 있으면 src에 수식 자리를 <x0/>로 바꾼 글이 있다 (모델이 수식을 건드리지 않도록).
+    # keep은 수식뿐인 문단: 번역하지 않고 원본을 둔다
+    def need(lb):
+        return not lb.get("keep") and translator.worth(translator.TOKEN.sub("", lb.get("src", lb["text"])), lang)
+
+    todo = [i for i, lb in enumerate(labels) if "ko" not in lb and need(lb)]
+    items = [{"text": lb.get("src", lb["text"])} for lb in labels]
     context = "\n".join(lb["text"] for lb in labels)[:3000]
     system = translator.system_prompt(context, kind, lang)
-    total = sum(1 for lb in labels if translator.worth(lb["text"], lang))
+    total = sum(1 for lb in labels if need(lb))
     done = total - len(todo)
     on_progress("translating", done, total)
     for idxs in translator.batches([items[i] for i in todo]):
@@ -399,4 +404,4 @@ def translate_labels(model: str, labels: list[dict], on_progress, lang: str, kin
         save()
         done += len(real)
         on_progress("translating", done, total)
-    return sum(1 for lb in labels if "ko" not in lb and translator.worth(lb["text"], lang))
+    return sum(1 for lb in labels if "ko" not in lb and need(lb))
