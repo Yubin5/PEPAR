@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -18,6 +19,33 @@ from config import settings
 from errors import LLMUnavailable, PeparError
 
 LLM_URL = settings["llm_url"]
+IN_DOCKER = os.path.exists("/.dockerenv")
+_llm_ok = LLM_URL  # 지난번에 연결된 주소
+
+
+def _llm_urls() -> list[str]:
+    """요청을 보낼 LLM 주소 후보 (지난번에 연결된 것부터). 도커 컨테이너 안의 127.0.0.1·localhost는 컨테이너
+    자신이라, 바깥 컴퓨터(host.docker.internal)로도 보내 본다: config.toml을 도커 밖과 똑같이 쓸 수 있도록."""
+    host = urlparse(LLM_URL).hostname
+    urls = [LLM_URL]
+    if IN_DOCKER and host in ("127.0.0.1", "localhost"):
+        urls.append(LLM_URL.replace(f"//{host}", "//host.docker.internal", 1))
+    return sorted(urls, key=lambda u: u != _llm_ok)
+
+
+def _llm_send(send):
+    """send(주소)를 후보 주소마다 연결될 때까지 해 보고, 된 주소를 기억한다. 모두 연결이 안 되면 마지막 오류를 낸다."""
+    global _llm_ok
+    err = None
+    for url in _llm_urls():
+        try:
+            r = send(url)
+        except requests.ConnectionError as e:
+            err = e
+            continue
+        _llm_ok = url
+        return r
+    raise err
 BATCH_CHARS = 2500
 BATCH_ITEMS = 12
 MAX_BLOCKS = 3000
@@ -549,8 +577,7 @@ def list_models() -> list[dict]:
     - 모델 하나만 띄우는 방식(-m … --mmproj …): data에는 이름·크기뿐이고, 같은 이름으로 따로 있는
       models 목록에 capabilities(["completion", "multimodal"])가 있다. 모델은 늘 올라가 있다.
     """
-    url = LLM_URL.rsplit("/chat/completions", 1)[0] + "/models"
-    r = requests.get(url, timeout=5)
+    r = _llm_send(lambda u: requests.get(u.rsplit("/chat/completions", 1)[0] + "/models", timeout=5))
     r.raise_for_status()
     body = r.json()
     caps = {x.get("name") or x.get("model"): x["capabilities"]
@@ -587,7 +614,7 @@ def _post(body: dict, attempts: int = 8, wait: int = 20) -> dict:
     last = detail = ""
     for n in range(attempts):
         try:
-            r = requests.post(LLM_URL, json=body, timeout=900)
+            r = _llm_send(lambda u: requests.post(u, json=body, timeout=900))
             if r.status_code < 500:
                 r.raise_for_status()
                 return r.json()

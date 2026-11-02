@@ -2,8 +2,9 @@
 host = ["127.0.0.1"]
 port = 8765
 
-# llama.cpp server
-llm_url = "http://127.0.0.1:9090/v1/chat/completions"
+# llama.cpp server: address and port are enough (/v1/chat/completions is added).
+# In Docker, 127.0.0.1 also tries the host machine (host.docker.internal) when it does not answer.
+llm_url = "http://127.0.0.1:9090"
 
 cache_dir = "cache"
 

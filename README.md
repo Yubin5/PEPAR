@@ -57,10 +57,11 @@ python app.py                         # http://127.0.0.1:8765
 ```bash
 git clone https://github.com/Yubin5/PEPAR.git
 cd PEPAR
+cp config.example.toml config.toml    # 설정은 이 파일 하나 (llm_url 등)
 docker compose up -d                  # http://127.0.0.1:8765
 ```
 
-`.env` 또는 환경변수로 `PEPAR_PORT`, `PEPAR_LLM_URL`, `PEPAR_PASSWORD`, `PEPAR_TRUSTED_PROXIES`를 줄 수 있고, 캐시와 로그인 세션은 `pepar-cache` 볼륨에 남습니다.
+설정은 직접 실행할 때와 같은 `config.toml` 하나로 합니다. `llm_url`은 `http://127.0.0.1:8080`처럼 주소와 포트만 적으면 되고, 컨테이너 안에서 `127.0.0.1`이 응답하지 않으면 호스트(`host.docker.internal`)로 다시 시도합니다. 캐시와 로그인 세션은 `pepar-cache` 볼륨에 남습니다.
 
 기본(bridge)에서는 호스트의 llama.cpp가 `0.0.0.0`에서 열려 있고 방화벽이 docker 네트워크를 허용해야 합니다. 그렇지 않고 llama가 `127.0.0.1`에서만 열려 있다면 호스트 네트워크로 실행하세요.
 

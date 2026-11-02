@@ -1,4 +1,8 @@
-"""Settings: PEPAR_* environment variables > config.toml > defaults."""
+"""Settings live in config.toml (one file, also used by Docker). Missing keys fall back to DEFAULTS.
+
+PEPAR_* environment variables still override the file for advanced use; the Docker image sets only
+container facts with them (listen on 0.0.0.0:8765, cache in /app/cache).
+"""
 
 import ipaddress
 import os
@@ -10,7 +14,7 @@ ROOT = Path(__file__).parent
 DEFAULTS = {
     "host": ["127.0.0.1"],
     "port": 8765,
-    "llm_url": "http://127.0.0.1:9090/v1/chat/completions",
+    "llm_url": "http://127.0.0.1:9090",
     "cache_dir": "cache",
     "password": "",
     "trusted_proxies": [],
@@ -69,7 +73,18 @@ def _load() -> dict:
         raise SystemExit("host must not be empty.")
     cache = Path(cfg["cache_dir"]).expanduser()
     cfg["cache_dir"] = cache if cache.is_absolute() else ROOT / cache
+    cfg["llm_url"] = llm_endpoint(str(cfg["llm_url"]))
     return cfg
+
+
+def llm_endpoint(url: str) -> str:
+    """llm_url은 주소와 포트만 적어도 된다: http://127.0.0.1:8080 → …/v1/chat/completions. 끝까지 적었으면 그대로."""
+    url = url.strip().rstrip("/")
+    if url.endswith("/chat/completions"):
+        return url
+    if not url.endswith("/v1"):
+        url += "/v1"
+    return url + "/chat/completions"
 
 
 settings = _load()

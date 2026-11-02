@@ -55,6 +55,13 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(s["port"], 2222)
         self.assertEqual(s["host"], ["0.0.0.0", "127.0.0.1"])
 
+    def test_llm_url_address_and_port_are_enough(self):
+        self.assertEqual(load('llm_url = "http://127.0.0.1:8080"')["llm_url"], "http://127.0.0.1:8080/v1/chat/completions")
+        self.assertEqual(load('llm_url = "http://h:9/v1/"')["llm_url"], "http://h:9/v1/chat/completions")
+        full = "http://h:9/v1/chat/completions"
+        self.assertEqual(load(f'llm_url = "{full}"')["llm_url"], full)
+        self.assertEqual(load()["llm_url"], "http://127.0.0.1:9090/v1/chat/completions")
+
     def test_unknown_key_rejected(self):
         with self.assertRaises(SystemExit):
             load("prot = 1")

@@ -1,7 +1,7 @@
 #!/bin/bash
 # 작업이 진행 중이면 재시작을 거부한다 (-f로 강제).
 cd "$(dirname "$0")"
-PORT=${PEPAR_PORT:-8765}
+PORT=$(.venv/bin/python -c "from config import settings; print(settings['port'])")
 PASSWORD=$(.venv/bin/python -c "import config; print(config.settings['password'])")
 JAR=$(mktemp)
 trap 'rm -f "$JAR"' EXIT
