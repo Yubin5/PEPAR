@@ -106,6 +106,8 @@ def _runs(chars: list[tuple[str, str]]) -> list[list[str]]:
     if out:
         out[0][0] = out[0][0].lstrip()
         out[-1][0] = out[-1][0].rstrip()
+    for r in out:  # 안전장치: 혹시 남은 반쪽 글자(짝 없는 서로게이트)는 뺀다
+        r[0] = ocr.clean(r[0])
     return [r for r in out if r[0]]
 
 
@@ -202,8 +204,24 @@ def page_lines(page) -> tuple[list[dict], list]:
             lines.append(cur)
 
     try:
-        for i in range(tp.count_chars()):
+        n_chars = tp.count_chars()
+        pair_tail = False
+        for i in range(n_chars):
+            if pair_tail:  # 바로 앞 글자와 합친 뒤쪽 반쪽
+                pair_tail = False
+                continue
             code = pdfium_raw.FPDFText_GetUnicode(tp.raw, i)
+            boxes = [i]
+            # 기본 범위 밖의 글자(수학 영숫자 𝑥, 𝒪 등)는 반쪽 둘(서로게이트 쌍)로 나온다: 하나로 합친다.
+            # 짝이 없는 반쪽은 버린다 (그대로 두면 저장할 때 UTF-8로 쓰지 못해 작업이 실패한다)
+            if 0xD800 <= code <= 0xDBFF and i + 1 < n_chars:
+                low = pdfium_raw.FPDFText_GetUnicode(tp.raw, i + 1)
+                if 0xDC00 <= low <= 0xDFFF:
+                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                    boxes.append(i + 1)
+                    pair_tail = True
+            if 0xD800 <= code <= 0xDFFF:
+                continue
             ch = chr(code) if code else ""
             if abs(math.sin(pdfium_raw.FPDFText_GetCharAngle(tp.raw, i))) > 0.1:
                 continue
@@ -211,7 +229,9 @@ def page_lines(page) -> tuple[list[dict], list]:
                 if cur:
                     cur["space"] = True
                 continue
-            left, bottom, right, top = tp.get_charbox(i)
+            # 합친 글자는 두 반쪽 중 크기가 있는 쪽 상자를 쓴다
+            left, bottom, right, top = next((b for b in (tp.get_charbox(k) for k in boxes) if b[2] > b[0] or b[3] > b[1]),
+                                            tp.get_charbox(i))
             if right <= left and top <= bottom:
                 continue
             x1, y1, x2, y2 = left, H - top, right, H - bottom

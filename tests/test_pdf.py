@@ -70,6 +70,12 @@ class PageLinesTest(unittest.TestCase):
         self.assertEqual(str(pepar.rich_text("행렬 <x0/>를 학습한다", prose["math"])),
                          '행렬 <span class="m"><i>W</i><sup><i>Q</i></sup></span>를 학습한다')
 
+    def test_unpaired_surrogates_never_reach_saved_data(self):
+        # pdfium은 기본 범위 밖 글자를 반쪽 둘로 준다. 짝이 맞지 않는 반쪽이 수식 조각에 남으면
+        # 저장(UTF-8)에서 작업이 실패했다 (2026-11-03): 빼고 남은 글자만 둔다
+        self.assertEqual(pdfdoc._runs([("a", "i"), ("\ud835", "i"), ("b", "i")]), [["ab", "i"]])
+        self.assertEqual(pdfdoc._runs([("\ud835", "")]), [])
+
     def test_check_rejects_non_pdf(self):
         with self.assertRaises(translator.PeparError):
             pdfdoc.check(b"hello")
