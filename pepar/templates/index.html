@@ -219,27 +219,25 @@
     if (last && [...sel.options].some(o => o.value === last)) sel.value = last;
   } catch {}
   sel.addEventListener('change', () => { try { localStorage.setItem('pepar-model', sel.value); } catch {} });
-  // 번역할 언어도 브라우저별로 기억
   const langSel = document.getElementById('lang');
   try {
     const last = localStorage.getItem('pepar-lang');
     if (last && [...langSel.options].some(o => o.value === last)) langSel.value = last;
   } catch {}
   langSel.addEventListener('change', () => { try { localStorage.setItem('pepar-lang', langSel.value); } catch {} });
-  // 기타 (직접 입력): 입력칸과 빨간 경고를 보인다. 입력한 글도 기억
   const langText = document.getElementById('lang-text');
   try { langText.value = localStorage.getItem('pepar-lang-text') || ''; } catch {}
   langText.addEventListener('input', () => { try { localStorage.setItem('pepar-lang-text', langText.value); } catch {} });
   const showCustom = () => {
     const custom = langSel.value === 'other';
     langText.hidden = !custom;
-    langText.disabled = !custom;  // 다른 언어를 고르면 보내지 않는다
+    langText.disabled = !custom;
     document.getElementById('lang-warn').hidden = !custom;
   };
   langSel.addEventListener('change', () => { showCustom(); if (langSel.value === 'other') langText.focus(); });
   showCustom();
   const DEFAULT_LANG = {{ default_lang|tojson }};
-  // 모델 칸: 한국어는 모델 이름 그대로, 다른 언어는 "모델@언어" (서버의 slot_for와 같다)
+  // 모델 칸 (서버의 slot_for와 같다)
   const slotOf = (model, lang) => lang === DEFAULT_LANG ? model : `${model}@${lang}`;
   const langTag = (lang, name, custom) => lang && lang !== DEFAULT_LANG
     ? el('span', { className: custom ? 'tag custom-lang' : 'tag', textContent: name, title: custom ? '직접 입력한 언어 (지원 불안정)' : '' })
@@ -256,13 +254,12 @@
     updateVisionWarn();
     try { localStorage.setItem('pepar-tab', name); } catch {}
   };
-  // 모델의 data-vision: '1' 이미지를 읽음, '' 못 읽음, '?' 알 수 없음 (막지 않는다)
+  // data-vision: '1' 읽음, '' 못 읽음, '?' 모름
   const updateVisionWarn = () => { $('vision-warn').hidden = !!sel.selectedOptions[0]?.dataset.vision || !sel.options.length; };
   for (const b of document.querySelectorAll('.tabs [data-tab]')) b.addEventListener('click', () => setTab(b.dataset.tab));
   sel.addEventListener('change', updateVisionWarn);
   try { const t = localStorage.getItem('pepar-tab'); if (['pdf', 'image', 'text'].includes(t)) setTab(t); } catch {}
 
-  // 텍스트: 글자 수 표시, 입력 중인 글은 브라우저에 임시 저장
   const textArea = $('text');
   const TEXT_MAX = {{ text_max }};
   const showCount = () => {
@@ -288,7 +285,6 @@
     dt.items.add(f);
     input.files = dt.files;
   };
-  // 끌어놓거나 붙여넣은 파일: 종류에 맞는 탭으로 보낸다 (이미지 탭에 PDF를 놓으면 PDF 탭으로)
   const setFile = f => {
     if (!f) return false;
     if (isPdf(f)) { put(pdfInput, f); setTab('pdf'); showPdf(); return true; }
@@ -311,7 +307,7 @@
   $('pdf-url-submit').addEventListener('click', e => {
     if (!$('pdf-url').value.trim()) { e.preventDefault(); $('pdf-url').focus(); }
   });
-  // PDF 링크 칸에서 Enter: 폼의 기본 버튼(문서 탭의 번역)이 아니라 링크 번역으로
+  // Enter가 문서 탭의 기본 버튼으로 가지 않도록
   $('pdf-url').addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); $('pdf-url-submit').click(); }
   });
@@ -322,12 +318,11 @@
   $('image-submit').addEventListener('click', e => {
     if (!fileInput.files.length) { e.preventDefault(); fileInput.click(); return; }
     if (!sel.selectedOptions[0]?.dataset.vision && !confirm(`${sel.value}은(는) 이미지를 읽지 못하는 모델로 보입니다. 그래도 보낼까요?`)) e.preventDefault();
-    // e2b·e4b는 작아서 글자를 지어내거나 위치를 크게 틀린다
+    // e2b·e4b는 글자 위치와 내용을 크게 틀린다
     else if (/-e[24]b$/.test(sel.value) && !confirm(`${sel.value}은(는) 작은 모델이라 글자 위치와 내용이 부정확합니다. gemma4-12b를 권장합니다.\n그래도 ${sel.value}로 번역할까요?`)) e.preventDefault();
   });
-  // 주소로 번역할 때는 파일을 같이 보내지 않는다
   $('form').addEventListener('submit', e => {
-    if (langSel.value === 'other' && !langText.value.trim()) {  // 직접 입력을 골랐는데 비어 있으면 보내지 않는다
+    if (langSel.value === 'other' && !langText.value.trim()) {
       e.preventDefault();
       langText.focus();
       return;
@@ -337,21 +332,18 @@
       textArea.focus();
       return;
     }
-    // 화면을 옮기지 않고 보낸다: 번역은 서버에서 시작되고, 진행 상황은 아래 「번역 중」에서 본다
     e.preventDefault();
     send(e.submitter || $('panel-url').querySelector('button[type="submit"]'));
   });
 
-  // 안내 문구 (버튼 아래). parts는 글자나 요소
   const notice = (err, ...parts) => {
     $('notice').className = err ? 'notice err' : 'notice';
     $('notice').replaceChildren(...parts);
   };
   const openLink = href => el('a', { href, target: '_blank', textContent: '열기' });
-  const watching = new Map();  // 이 화면에서 시작한 작업 "model/key" → 결과 주소. 끝나면 알려 준다
+  const watching = new Map();
 
   async function send(btn) {
-    // 누른 버튼이 있는 탭의 입력만 보낸다. 주소로 보내는 요청(GET)에는 파일을 싣지 않는다
     const panel = btn.closest('[id^="panel-"]');
     const method = (btn.getAttribute('formmethod') || 'get').toUpperCase();
     const fd = new FormData();
@@ -388,7 +380,6 @@
     }
   }
 
-  // 보낸 탭의 입력을 비운다 (텍스트는 임시 저장분도)
   function clearPanel(panel) {
     for (const x of panel.querySelectorAll('input[name], textarea[name]')) x.value = '';
     showFile(); showPdf(); showCount();
@@ -403,11 +394,9 @@
   const dur = s => s >= 3600 ? `${Math.floor(s / 3600)}시간 ${Math.round(s % 3600 / 60)}분`
                  : s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
   const host = u => { try { return new URL(u).hostname; } catch { return u || ''; } };
-  // key 접두사 i-는 이미지, 그 외는 문서
-  // 종류는 서버가 알려 준다 (PDF였던 웹 주소도 pdf). 모르면 key로 짐작
   const kindOf = x => x.kind || (x.key.startsWith('i-') ? 'image' : x.key.startsWith('t-') ? 'text' : x.key.startsWith('p-') ? 'pdf' : 'doc');
   const KIND_LABEL = { doc: '문서', pdf: 'PDF', image: '이미지', text: '텍스트' };
-  const UNIT = { doc: '블록', pdf: '문단', image: '라벨', text: '블록' };  // 번역 단위
+  const UNIT = { doc: '블록', pdf: '문단', image: '라벨', text: '블록' };
   const sourceOf = (key, url) => key.startsWith('w-') ? host(url) : 'arXiv';
   const kindTag = x => el('span', { className: `tag kind kind-${kindOf(x)}`, textContent: KIND_LABEL[kindOf(x)] });
 
@@ -493,7 +482,6 @@
     } catch {}
     const active = jobs.filter(j => j.stage !== 'error');
     const now = new Set(active.map(j => `${j.model}/${j.key}`));
-    // 이 화면에서 시작한 작업이 끝났으면 버튼 아래에 알린다
     for (const [k, href] of watching) {
       if (now.has(k)) continue;
       const failed = jobs.find(j => `${j.model}/${j.key}` === k && j.stage === 'error');
@@ -501,7 +489,6 @@
       else notice(false, '번역이 끝났습니다 · ', openLink(href));
       watching.delete(k);
     }
-    // 진행 중이던 작업이 목록에서 빠졌다 = 끝났다 → 문서 목록 새로고침
     if ([...jobKeys].some(k => !now.has(k))) loadDocs();
     jobKeys = now;
     renderJobs(jobs);
@@ -512,7 +499,7 @@
   const pollNow = () => { clearTimeout(pollTimer); pollJobs(); };
 
   let docs = [];
-  let contentHits = new Map();  // "model/key" → {snippet, count}
+  let contentHits = new Map();
   let searchSeq = 0;
 
   async function loadDocs() {
@@ -625,7 +612,7 @@
       if (dlg.returnValue !== 'ok' || !pick.value) return;
       location.href = failedOnly
         ? docHref(d, '?retry_failed=1' + (pick.value !== d.llm ? `&with=${encodeURIComponent(pick.value)}` : ''))
-        : docHref({ model: slotOf(pick.value, d.lang), key: d.key }, '?retranslate=1');  // 같은 언어로
+        : docHref({ model: slotOf(pick.value, d.lang), key: d.key }, '?retranslate=1');
     };
     dlg.showModal();
   }
@@ -652,12 +639,12 @@
   $('search').addEventListener('input', () => {
     renderDocs();
     clearTimeout(timer);
-    timer = setTimeout(async () => {  // 본문 검색은 입력이 멈추면 서버에
+    timer = setTimeout(async () => {
       const q = $('search').value.trim();
       const seq = ++searchSeq;
       let hits = [];
       if (q.length >= 2) { try { hits = await (await fetch('/api/search?q=' + encodeURIComponent(q))).json(); } catch {} }
-      if (seq !== searchSeq) return;  // 더 최근 입력이 있으면 버림
+      if (seq !== searchSeq) return;
       contentHits = new Map(hits.map(h => [`${h.model}/${h.key}`, h]));
       renderDocs();
     }, 300);
@@ -665,7 +652,7 @@
 
   loadDocs();
   pollJobs();
-  setInterval(renderDocs, 60000);  // "
+  setInterval(renderDocs, 60000);
 })();
 </script>
 </body>

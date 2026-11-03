@@ -51,7 +51,6 @@ class PageLinesTest(unittest.TestCase):
         self.assertEqual(blocks[1]["lines"], 2)
 
     def test_math_is_protected_or_kept(self):
-        # 문장 속 수식(CMMI 글꼴)은 <x0/>로 바꿔 번역하고, 위첨자는 모양으로 남긴다. 수식뿐인 줄은 번역하지 않는다
         pdf = pdfium.PdfDocument(make_pdf([
             (72, 700, "Let the matrix"), (152, 700, "W", "F2", 12), (164, 705, "Q", "F2", 8),
             (175, 700, "be learned during training of the model."),
@@ -66,13 +65,10 @@ class PageLinesTest(unittest.TestCase):
         self.assertEqual(prose["math"], [[["W", "i"], ["Q", "i^"]]])
         self.assertNotIn("keep", prose)
         self.assertTrue(eq["keep"])
-        # 번역문의 수식 자리는 HTML로 다시 그린다
         self.assertEqual(str(pepar.rich_text("행렬 <x0/>를 학습한다", prose["math"])),
                          '행렬 <span class="m"><i>W</i><sup><i>Q</i></sup></span>를 학습한다')
 
     def test_unpaired_surrogates_never_reach_saved_data(self):
-        # pdfium은 기본 범위 밖 글자를 반쪽 둘로 준다. 짝이 맞지 않는 반쪽이 수식 조각에 남으면
-        # 저장(UTF-8)에서 작업이 실패했다 (2026-11-03): 빼고 남은 글자만 둔다
         self.assertEqual(pdfdoc._runs([("a", "i"), ("\ud835", "i"), ("b", "i")]), [["ab", "i"]])
         self.assertEqual(pdfdoc._runs([("\ud835", "")]), [])
 
@@ -98,7 +94,7 @@ class PdfUploadTest(unittest.TestCase):
 
     def test_upload_translate_view_delete(self):
         import io
-        r = self.client.post("/upload", data={"model": "a", "pdf": (io.BytesIO(SAMPLE), "paper.pdf")})  # PDF 탭의 파일 칸
+        r = self.client.post("/upload", data={"model": "a", "pdf": (io.BytesIO(SAMPLE), "paper.pdf")})
         key = r.headers["Location"].rsplit("/", 1)[1]
         self.assertTrue(key.startswith("p-"))
         self.client.get(f"/view/a/{key}")
@@ -147,7 +143,6 @@ class ViewerUrlTest(unittest.TestCase):
         self.assertEqual(r.headers["Location"], f"/view/a/{translator.parse_source('https://y.org/b.pdf').key}")
 
     def test_arxiv_in_pdf_tab_is_translated_as_pdf(self):
-        # 문서 탭은 arXiv 웹(HTML) 버전, PDF 탭 링크 칸은 PDF
         self.assertEqual(translator.parse_source("https://arxiv.org/pdf/1706.03762").kind, "arxiv")
         for text in ("https://arxiv.org/pdf/1706.03762", "https://arxiv.org/abs/1706.03762", "1706.03762"):
             src = translator.parse_source(text, pdf=True)

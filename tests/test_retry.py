@@ -54,7 +54,6 @@ class RetryFailedTest(unittest.TestCase):
         self.assertEqual(self.calls, [{"model": "a", "label": "a", "checkpoint": {"x": "y"}}])
 
     def test_other_language_has_its_own_slot(self):
-        # 한국어 결과(a)가 있어도 영어(a@en)는 따로 번역하고, 따로 저장한다
         (pepar.model_dir("a") / f"{KEY}v1.html").write_text("ko")
         r = self.client.get(f"/open?model=a&lang=en&url={KEY}")
         self.assertEqual(r.headers["Location"], f"/view/a@en/{KEY}")
@@ -81,7 +80,6 @@ class RetryFailedTest(unittest.TestCase):
         self.assertEqual(r.headers["Location"], f"/view/a@{code}/{KEY}")
         self.assertEqual(translator.lang_name(code), "Vietnamese")
         self.assertEqual(json.loads((pepar.CACHE / "langs.json").read_text())[code], "Vietnamese")
-        # 같은 표현은 같은 칸
         r2 = self.client.get(f"/open?model=a&lang=other&lang_text=VIETNAMESE&url={KEY}")
         self.assertEqual(r2.headers["Location"], f"/view/a@{code}/{KEY}")
         for p in pepar.model_dir(f"a@{code}").glob("*"):
@@ -109,7 +107,6 @@ class RetryFailedTest(unittest.TestCase):
         self.assertTrue(key.startswith("t-"))
         self.assertEqual(r.headers["Location"], f"/view/a@en/{key}")
         self.assertEqual(self.client.get(f"/text/{key}").get_data(as_text=True), body)
-        # 같은 글은 같은 key
         r2 = self.client.post("/text", data={"model": "a", "lang": "en", "text": body + "\n"})
         self.assertEqual(r2.headers["Location"], r.headers["Location"])
         self.client.get(f"/view/a@en/{key}")
@@ -118,7 +115,6 @@ class RetryFailedTest(unittest.TestCase):
         self.assertEqual(self.langs, ["en"])
         doc = next(d for d in self.client.get("/api/docs").get_json() if d["key"].startswith(key))  # 가짜 run은 key에 v1을 붙인다
         self.assertEqual((doc["where"], doc["lang"]), ("텍스트", "en"))
-        # 마지막 번역을 지우면 원문 텍스트도 지운다
         (pepar.model_dir("a@en") / f"{key}.html").write_text("<html></html>")
         self.assertEqual(self.client.delete(f"/api/docs/a@en/{key}").status_code, 200)
         self.assertFalse(pepar.text_path(key).exists())
@@ -127,7 +123,6 @@ class RetryFailedTest(unittest.TestCase):
         self.assertEqual(self.client.post("/text", data={"model": "a", "text": "  \n "}).status_code, 400)
 
     def test_start_from_home_without_leaving(self):
-        # 첫 화면에서 보낸 요청(JSON): 번역 화면으로 옮기지 않고 작업만 시작해 상태를 알려 준다
         J = {"Accept": "application/json"}
         for p in pepar.model_dir("a").glob(f"{KEY}*"):
             p.unlink()
@@ -136,10 +131,8 @@ class RetryFailedTest(unittest.TestCase):
         self.assertEqual(r.get_json(), {"status": "started", "model": "a", "key": KEY, "href": f"/view/a/{KEY}"})
         self.wait()
         self.assertEqual(len(self.calls), 1)
-        # 결과가 있으면 다시 번역하지 않고 열 주소만 (가짜 run은 key에 v1을 붙여 저장한다)
         self.assertEqual(self.client.get(f"/open?model=a&url={KEY}", headers=J).get_json()["status"], "done")
         self.assertEqual(len(self.calls), 1)
-        # 텍스트도 같은 방식, 오류는 JSON으로
         r = self.client.post("/text", data={"model": "a", "text": "Hello there.\n\nSecond."}, headers=J)
         self.assertEqual(r.get_json()["status"], "started")
         r = self.client.post("/text", data={"model": "a", "text": "  "}, headers=J)
@@ -160,7 +153,6 @@ class RetryFailedTest(unittest.TestCase):
 
 class LLMRetryTest(unittest.TestCase):
     def test_response_cut_midway_is_retried(self):
-        # LLM 서버가 응답 도중 죽었다가 다시 뜨면, 작업을 실패시키지 않고 다시 보낸다
         import requests
 
         class Ok:
@@ -190,7 +182,6 @@ class LLMRetryTest(unittest.TestCase):
 
 
     def test_cancel_during_retry_wait_stops_at_once(self):
-        # LLM 서버가 503을 내 재시도를 기다리는 중에 취소하면 기다림을 끝까지 채우지 않고 바로 멈춘다
         class Busy:
             status_code = 503
             text = "busy"

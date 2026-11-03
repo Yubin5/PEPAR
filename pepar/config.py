@@ -1,9 +1,4 @@
-"""Settings live in config.toml (one file, also used by Docker). It is optional: without it, or for
-missing keys, DEFAULTS apply.
-
-PEPAR_* environment variables still override the file for advanced use; the Docker image sets only
-container facts with them (where the config file and the cache are).
-"""
+"""설정: config.toml(없어도 됨)이 기본값보다, PEPAR_* 환경 변수가 둘 다보다 앞선다."""
 
 import ipaddress
 import os
@@ -11,12 +6,12 @@ import sys
 import tomllib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent  # 레포 맨 위 (config.toml, cache/가 있는 곳). 코드는 pepar/ 안
+ROOT = Path(__file__).resolve().parent.parent  # 레포 맨 위 (config.toml, cache/)
 
 DEFAULTS = {
     "host": ["127.0.0.1"],
     "port": 8000,
-    "llm_url": "http://127.0.0.1:8080",  # llama.cpp(llama-server) 기본 포트
+    "llm_url": "http://127.0.0.1:8080",
     "cache_dir": "cache",
     "password": "",
     "trusted_proxies": [],
@@ -29,7 +24,6 @@ def _load() -> dict:
     path = Path(os.environ.get("PEPAR_CONFIG", ROOT / "config.toml"))
     cfg = dict(DEFAULTS)
     if path.is_dir():
-        # 예전 compose.yml은 config.toml 파일 하나를 연결했는데, 파일이 없으면 Docker가 그 이름으로 빈 폴더를 만든다
         print(f"Ignoring {path}: it is a directory, not a file (Docker creates one when a mounted file is missing). "
               "Remove it (rmdir config.toml) and restore the file (git checkout config.toml).",
               file=sys.stderr, flush=True)
@@ -62,7 +56,7 @@ def _load() -> dict:
         elif not isinstance(cfg[key], bool):
             raise SystemExit(f"{key} must be true or false.")
 
-    if isinstance(cfg["host"], str):  # comma-separated string
+    if isinstance(cfg["host"], str):
         cfg["host"] = cfg["host"].split(",")
     cfg["host"] = [h.strip() for h in cfg["host"] if h.strip()]
     try:

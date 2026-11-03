@@ -24,11 +24,10 @@
     font-family: system-ui, "Pretendard", "Noto Sans KR", sans-serif; background: #fffe; color: #111;
     border-radius: 2px; transition: opacity .12s; cursor: default; }
   .lb.wrap { white-space: normal; }
-  .stage:lang(ko) .lb.wrap { word-break: keep-all; }  /* 한국어는 낱말 단위로 줄바꿈 (일본어·중국어는 글자 단위로 끊어야 한다) */
+  .stage:lang(ko) .lb.wrap { word-break: keep-all; }  /* 한국어는 낱말 단위로 */
   .lb.block { justify-content: flex-start; align-items: flex-start; text-align: left; }
   .lb.block.center { justify-content: center; align-items: center; text-align: center; }
-  .lb:hover { opacity: 0; }  /* 마우스를 올리면 그 자리의 원문이 보인다 */
-  /* 사진 위 글자는 흐리게 가리고 굵은 외곽선 글씨로 (밈 자막처럼) */
+  .lb:hover { opacity: 0; }
   .lb.photo { font-weight: 800; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
   .lb.hl { outline: 2px solid var(--accent); outline-offset: 1px; opacity: 1; }
   .fail { position: absolute; outline: 2px dotted #d29922; outline-offset: 1px; pointer-events: none; }
@@ -44,7 +43,6 @@
   td:first-child { color: var(--muted); width: 45%; }
   tr:hover td { background: var(--card); }
   td.none { color: var(--muted); font-style: italic; }
-  /* PDF 문단 속 수식: 원본처럼 세리프·이탤릭·위아래첨자로. 줄을 바꿀 때 수식 중간에서 끊지 않는다 */
   .m { font-family: "Times New Roman", "Nimbus Roman", "Liberation Serif", serif; white-space: nowrap; }
   .m sup, .m sub { font-size: .7em; line-height: 0; }
 </style>
@@ -89,16 +87,15 @@
 <script id="pagesizes" type="application/json">{{ page_pt|tojson }}</script>
 <script>
 (() => {
-  const allLabels = JSON.parse(document.getElementById('labels').textContent);  // 쪽마다 라벨 목록 (이미지는 한 쪽)
+  const allLabels = JSON.parse(document.getElementById('labels').textContent);
   const toggle = document.getElementById('toggle');
-  const allNodes = [];  // 쪽마다, 라벨 순서대로 덮개 요소 (번역이 없으면 실패 표시 또는 null)
+  const allNodes = [];
 
   toggle.addEventListener('click', () => {
     const orig = document.getElementById('pages').classList.toggle('orig');
     toggle.textContent = orig ? '번역 보기' : '원문 보기';
   });
 
-  // 번역문(PDF 문단의 수식 자리는 <x0/>) → 화면 요소. 수식은 이탤릭·위첨자·아래첨자로 다시 그린다
   function mathNode(runs) {
     const span = document.createElement('span');
     span.className = 'm';
@@ -113,12 +110,9 @@
   const fillRich = (n, text, math) =>
     n.replaceChildren(...text.split(/<x(\d+)\/>/).map((part, k) => k % 2 ? mathNode(math?.[+part]) : part));
 
-  // 쪽 하나(원본 그림 + 그 위 덮개)를 꾸민다
   function setupPage(stage, img, labels, nodes) {
     let ready;
-    const page = { stage, img, labels, ready: new Promise(r => { ready = r; }) };  // 번역본 저장에서 쓴다
-    // 라벨마다 덮개 위치 [x1, y1, x2, y2](원본 픽셀)와 색. 모델 박스는 p·y 아랫부분이 빠지고 몇 px씩 어긋난다.
-    // 캔버스를 못 쓰면 고정 여유만 둔다
+    const page = { stage, img, labels, ready: new Promise(r => { ready = r; }) };
     function fallback() {
       const W = img.naturalWidth, H = img.naturalHeight;
       return labels.map(({ box, lines = 1 }) => {
@@ -128,7 +122,6 @@
       });
     }
 
-    // 원본 픽셀을 보고, 박스 가장자리에서 글자 획이 이어지는 만큼 박스를 넓힌다. 색도 여기서 뽑는다
     function analyze() {
       const W = img.naturalWidth, H = img.naturalHeight;
       const cv = document.createElement('canvas');
@@ -149,7 +142,7 @@
         return ring;
       };
       const ringBg = (...a) => median(ringPts(...a));
-      // from에서 step 방향으로 test가 참인 줄이 이어지는 끝. gap보다 긴 공백, limit, stop(다른 라벨 자리)에서 멈춘다
+      // 이어지는 끝: gap보다 긴 공백, limit, stop(다른 라벨 자리)에서 멈춘다
       const grow = (from, step, limit, gap, test, stop) => {
         let last = from;
         for (let v = from + step; Math.abs(v - from) <= limit && Math.abs(v - last) <= gap && !stop(v); v += step) if (test(v)) last = v;
@@ -159,14 +152,13 @@
       return labels.map(({ box, lines = 1 }, i) => {
         let [x1, y1, x2, y2] = [box[0] * W, box[1] * H, box[2] * W, box[3] * H].map(Math.round);
         const h = Math.max(4, (y2 - y1) / lines);
-        const ring0 = ringPts(x1, y1, x2, y2, h * 0.35);  // 가깝게 재야 색 있는 버튼 안 글자의 배경이 버튼 색이 된다
+        const ring0 = ringPts(x1, y1, x2, y2, h * 0.35);  // 가깝게 재야 색 있는 버튼 안 글자에서 버튼 색이 배경이 된다
         const bg0 = median(ring0);
-        // 둘레 색이 고르지 않으면 사진 위 글자다: 획을 따라 넓히면 끝없이 번지므로 넓히지 않고 흐림 처리한다
-        // 두 색으로 거의 설명되면 사진이 아니라 평평한 화면이다
+        // 둘레가 한두 색으로 설명되지 않으면 사진 위 글자: 넓히지 않고 흐림
         const rest = ring0.filter(p => dist(p, bg0) >= 30);
         const c2 = rest.length ? median(rest) : bg0;
         const photo = ring0.filter(p => dist(p, bg0) < 30 || dist(p, c2) < 30).length < ring0.length * 0.8;
-        // 글자 줄 = 배경색 픽셀과 다른 색이 섞인 줄 (파란 버튼 안 흰 글씨에서 버튼 밖 흰 여백을 글자로 보지 않도록)
+        // 글자 줄 = 배경색과 다른 색이 섞인 줄
         const mixed = pts => {
           let ink = false, bg = false;
           for (const p of pts) {
@@ -178,12 +170,10 @@
         };
         const col = (a, b) => x => mixed(function* () { for (let y = a; y <= b; y++) yield at(x, y); }());
         const row = (a, b) => y => mixed(function* () { for (let x = a; x <= b; x++) yield at(x, y); }());
-        // 다른 라벨 자리에 닿으면 멈춘다 (옆의 번역하지 않은 글자를 덮지 않도록)
         const others = boxes.filter((_, j) => j !== i);
         const hitCol = (a, b) => x => others.some(o => x >= o[0] && x <= o[2] && Math.min(b, o[3]) - Math.max(a, o[1]) > h * 0.3);
         const hitRow = (a, b) => y => others.some(o => y >= o[1] && y <= o[3] && Math.min(b, o[2]) - Math.max(a, o[0]) > h * 0.3);
         if (photo) {
-          // 사진 위: 글자색과 비슷한 픽셀이 있는 줄만 따라 넓힌다 (밈의 흰 글씨처럼 사진에 드문 색이면 번지지 않는다)
           const inner = [];
           for (let y = y1; y < y2; y += Math.max(1, (y2 - y1) / 12))
             for (let x = x1; x < x2; x += Math.max(1, (x2 - x1) / 40)) inner.push(at(x, y));
@@ -201,20 +191,18 @@
             x1 = grow(x1, -1, h * 2, h * 0.5, tcol(y1, y2), hitCol(y1, y2));
           }
         }
-        // 위아래 먼저 (아랫부분 획), 그다음 좌우 (낱말 사이 빈칸은 건너뛴다)
         if (!photo) {
           y2 = grow(y2, 1, h * 0.7, Math.max(1, h * 0.08), row(x1, x2), hitRow(x1, x2));
           y1 = grow(y1, -1, h * 0.5, Math.max(1, h * 0.08), row(x1, x2), hitRow(x1, x2));
-          // 모델이 긴 줄의 끝을 한참 못 미치게 잡기도 해서 좌우는 멀리까지 본다
           x2 = grow(x2, 1, h * 10, h * 0.5, col(y1, y2), hitCol(y1, y2));
           x1 = grow(x1, -1, h * 10, h * 0.5, col(y1, y2), hitCol(y1, y2));
         }
-        const m = Math.max(1, h * (photo ? 0.2 : 0.12));  // 사진 위는 외곽선·흐림 경계까지 덮도록 여유를 더
+        const m = Math.max(1, h * (photo ? 0.2 : 0.12));
         const bg = ringBg(x1, y1, x2, y2, m + 2);
         const inside = [];
         for (let y = y1; y < y2; y += Math.max(1, (y2 - y1) / 12))
           for (let x = x1; x < x2; x += Math.max(1, (x2 - x1) / 40)) inside.push(at(x, y));
-        // 글자색: 배경과 확실히 다른 픽셀 중 밝은 쪽/어두운 쪽에서 많은 쪽 (가장 먼 색만 고르면 외곽선 글씨의 테두리 색이 잡힌다)
+        // 글자색: 배경과 다른 픽셀 중 밝은/어두운 쪽에서 많은 쪽 (외곽선 글씨에서 테두리 색을 잡지 않도록)
         const far = inside.filter(p => dist(p, bg) > 90);
         const light = far.filter(p => lum(p) > 128), dark = far.filter(p => lum(p) <= 128);
         const main = light.length >= dark.length ? light : dark;
@@ -223,7 +211,7 @@
         const fg = dist(inkColor, bg) > 90 ? inkColor : (lum(bg) > 128 ? [17, 17, 17] : [245, 245, 245]);
         const rect = [Math.max(0, x1 - m), Math.max(0, y1 - m), Math.min(W, x2 + m), Math.min(H, y2 + m)];
         if (!photo) return { rect, h, bg: `rgb(${bg})`, fg: `rgb(${fg})` };
-        const edge = lum(fg) > 128 ? '#000' : '#fff';  // 글자색과 반대색 외곽선
+        const edge = lum(fg) > 128 ? '#000' : '#fff';
         return { rect, h, photo, edge, bg: `rgba(${bg},.6)`, fg: `rgb(${fg})`,
                  shadow: [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, 0]].map(([a, b]) => `${a * 1.5}px ${b * 1.5}px 1px ${edge}`).join(',') };
       });
@@ -231,10 +219,10 @@
 
     let covers;
     function build() {
-      try { covers = analyze(); } catch { covers = fallback(); }  // 캔버스를 못 쓰면 기본 흰 바탕
+      try { covers = analyze(); } catch { covers = fallback(); }
       labels.forEach((lb, i) => {
         let n = null;
-        if (lb.ko && lb.ko !== (lb.src || lb.text)) {  // 번역해도 그대로인 것(고유명사, 제품명)은 원본을 가리지 않는다
+        if (lb.ko && lb.ko !== (lb.src || lb.text)) {
           n = document.createElement('div');
           n.className = 'lb';
           fillRich(n, lb.ko, lb.math);
@@ -255,7 +243,6 @@
       ready();
     }
 
-    // 덮개 위치를 화면 크기에 맞추고, 번역문이 들어가도록 글자 크기를 줄인다
     function layout() {
       const s = stage.clientWidth / img.naturalWidth;
       labels.forEach((_, i) => {
@@ -265,16 +252,16 @@
         const h = covers[i].h * s;
         Object.assign(n.style, { left: x1 + 'px', top: y1 + 'px', width: x2 - x1 + 'px', height: y2 - y1 + 'px' });
         if (n.className === 'fail') return;
-        const multi = (labels[i].lines || 1) > 1;  // 여러 줄 문단은 처음부터 줄을 바꿔 채운다
+        const multi = (labels[i].lines || 1) > 1;
         n.classList.toggle('wrap', multi);
         n.classList.toggle('block', multi);
         n.classList.toggle('center', labels[i].align === 'center');
-        let size = h * 0.9;  // h는 원문 한 줄 높이
+        let size = h * 0.9;
         const fits = () => n.scrollWidth <= n.clientWidth + 1 && n.scrollHeight <= n.clientHeight + 1;
         n.style.fontSize = size + 'px';
         if (!multi) {
           while (!fits() && size > h * 0.6) n.style.fontSize = (size *= 0.92) + 'px';
-          if (!fits()) n.classList.add('wrap');  // 한 줄로는 너무 작아지면 줄을 바꿔서 다시 맞춘다
+          if (!fits()) n.classList.add('wrap');
         }
         while (!fits() && size > 7) n.style.fontSize = (size *= 0.92) + 'px';
       });
@@ -284,7 +271,6 @@
     return page;
   }
 
-  // 목록에서 줄에 마우스를 올리면 그림의 해당 라벨을 표시한다
   document.querySelectorAll('tr[data-i]').forEach(tr => {
     const n = () => allNodes[+tr.dataset.p]?.[+tr.dataset.i];
     tr.addEventListener('mouseenter', () => n()?.classList.add('hl'));
@@ -299,19 +285,16 @@
   });
 
   // ---------------------------------------------------------- 번역본 저장
-  // 화면과 같은 규칙(덮개 위치·색, 글자 크기 맞추기, 줄바꿈, 사진 위 흐림과 외곽선)으로 원본 크기 그림 위에 다시 그린다.
-  // 이미지는 PNG, PDF는 쪽 그림을 묶은 PDF (글자를 고를 수는 없다)
+  // 화면과 같은 규칙으로 원본 크기에 다시 그린다: 이미지는 PNG, PDF는 쪽 그림을 묶은 PDF
   const IS_PDF = {{ pdf|tojson }};
-  const PAGE_PT = JSON.parse(document.getElementById('pagesizes').textContent);  // 쪽 크기(포인트), 모르면 null
-  const FONT = 'system-ui, "Pretendard", "Noto Sans KR", sans-serif';  // .lb와 같은 글꼴
-  const KEEP_ALL = {{ lang|tojson }} === 'ko';  // 한국어는 낱말 단위 줄바꿈 (.lb.wrap의 keep-all)
+  const PAGE_PT = JSON.parse(document.getElementById('pagesizes').textContent);
+  const FONT = 'system-ui, "Pretendard", "Noto Sans KR", sans-serif';
+  const KEEP_ALL = {{ lang|tojson }} === 'ko';
   const CJK = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/;
   const CJK_SPLIT = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]|[^\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]+/g;
 
-  const MATH_FONT = '"Times New Roman", "Nimbus Roman", "Liberation Serif", serif';  // .m과 같은 글꼴
+  const MATH_FONT = '"Times New Roman", "Nimbus Roman", "Liberation Serif", serif';
 
-  // 번역문 → 조각: 글 낱말, 띄어쓰기, 수식([[글, 모양]] 덩어리. 줄을 바꿀 때 쪼개지 않는다).
-  // 한국어·라틴 문자는 낱말 단위, 일본어·중국어 글자는 한 글자씩
   function pieces(text, math) {
     const out = [];
     text.split(/<x(\d+)\/>/).forEach((part, k) => {
@@ -326,7 +309,6 @@
     return out;
   }
 
-  // 글자 모양별 글꼴. 위·아래첨자는 0.7배 (.m sup/sub와 같다)
   const textFont = (size, weight) => `${weight} ${size}px ${FONT}`;
   const runFont = (st, size, weight) =>
     `${st.includes('i') ? 'italic ' : ''}${weight} ${/[\^_]/.test(st) ? size * 0.7 : size}px ${MATH_FONT}`;
@@ -336,7 +318,6 @@
     return p.math.reduce((w, [t, st]) => { ctx.font = runFont(st, size, weight); return w + ctx.measureText(t).width; }, 0);
   }
 
-  // maxW 안에 들어가게 조각을 줄로 나눈다. 글 낱말 하나가 너무 길면 글자 단위로 자른다 (화면의 overflow-wrap: anywhere)
   function layoutLines(ctx, ps, maxW, wrap, size, weight) {
     if (!wrap) return [ps.filter((p, k) => !(p.sp && (k === 0 || k === ps.length - 1)))];
     ctx.font = textFont(size, weight);
@@ -373,7 +354,6 @@
     return line.reduce((w, p) => w + (p.sp ? spaceW : pieceWidth(ctx, p, size, weight)), 0);
   }
 
-  // 한 줄을 x에서부터 그린다. 위첨자는 위로, 아래첨자는 아래로 옮긴다
   function drawLine(ctx, line, x, y, size, weight, c, s) {
     ctx.font = textFont(size, weight);
     const spaceW = ctx.measureText(' ').width;
@@ -394,21 +374,21 @@
   function drawPage(page) {
     const { img, labels, covers } = page;
     const W = img.naturalWidth, H = img.naturalHeight;
-    const s = page.stage.clientWidth / W || 1;  // 화면 1px이 원본 몇 px인지 (흐림·외곽선 굵기를 화면과 맞춘다)
+    const s = page.stage.clientWidth / W || 1;
     const cv = document.createElement('canvas');
     cv.width = W; cv.height = H;
     const ctx = cv.getContext('2d');
     ctx.drawImage(img, 0, 0);
     labels.forEach((lb, i) => {
-      if (!lb.ko || lb.ko === (lb.src || lb.text)) return;  // 화면에서도 덮지 않는 것
+      if (!lb.ko || lb.ko === (lb.src || lb.text)) return;
       const c = covers[i];
       const [x1, y1, x2, y2] = c.rect;
       const bw = x2 - x1, bh = y2 - y1;
       ctx.save();
       ctx.beginPath();
       ctx.rect(x1, y1, bw, bh);
-      ctx.clip();  // 화면의 overflow: hidden
-      if (c.photo) {  // 사진 위: 그 자리를 흐리게 다시 그린다
+      ctx.clip();
+      if (c.photo) {
         ctx.filter = `blur(${12 / s}px)`;
         ctx.drawImage(img, 0, 0);
         ctx.filter = 'none';
@@ -441,8 +421,8 @@
     return cv;
   }
 
-  // 쪽 그림(JPEG)을 쪽마다 하나씩 넣은 PDF. 외부 라이브러리 없이 직접 쓴다
-  function makePdf(pages) {  // [{bytes, w, h, ptW, ptH}]
+  // 쪽 그림(JPEG)을 넣은 PDF를 라이브러리 없이 쓴다
+  function makePdf(pages) {
     const enc = new TextEncoder();
     const parts = [], offsets = [];
     let size = 0;
@@ -454,7 +434,7 @@
       add('\nendobj\n');
     };
     add('%PDF-1.4\n');
-    add(new Uint8Array([37, 226, 227, 207, 211, 10]));  // 이진 파일 표시
+    add(new Uint8Array([37, 226, 227, 207, 211, 10]));
     obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
     obj(2, `<< /Type /Pages /Kids [${pages.map((_, k) => `${3 + 3 * k} 0 R`).join(' ')}] /Count ${pages.length} >>`);
     pages.forEach((pg, k) => {
@@ -475,7 +455,6 @@
     const label = saveBtn.textContent;
     saveBtn.disabled = true;
     try {
-      // 아직 안 불러온 아래쪽 쪽들도 불러와서 덮개를 계산한다
       allPages.forEach(pg => { pg.img.loading = 'eager'; });
       const out = [];
       for (const [k, pg] of allPages.entries()) {
@@ -484,7 +463,7 @@
         const cv = drawPage(pg);
         if (!IS_PDF) { out.push(await toBlob(cv, 'image/png')); break; }
         const bytes = new Uint8Array(await (await toBlob(cv, 'image/jpeg', 0.9)).arrayBuffer());
-        const pt = PAGE_PT[k] || [595, 595 * cv.height / cv.width];  // 쪽 크기를 모르면 A4 너비로
+        const pt = PAGE_PT[k] || [595, 595 * cv.height / cv.width];
         out.push({ bytes, w: cv.width, h: cv.height, ptW: pt[0], ptH: pt[1] });
       }
       const blob = IS_PDF ? makePdf(out) : out[0];

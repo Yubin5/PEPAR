@@ -51,14 +51,13 @@ class AuthTest(AuthBase):
         self.assertEqual(self.client.get("/login").status_code, 200)
 
     def test_favicon_without_login(self):
-        # 로그인 화면에서도 파비콘이 보여야 한다
         pepar.PASSWORD = "pw"
         for name, mime in (("favicon.svg", "image/svg+xml"), ("favicon.ico", "image/"), ("apple-touch-icon.png", "image/png")):
             r = self.client.get(f"/{name}")
             self.assertEqual(r.status_code, 200, name)
             self.assertTrue(r.mimetype.startswith(mime), r.mimetype)
             r.close()
-        self.assertEqual(self.client.get("/favicon.txt").status_code, 302)  # 다른 이름은 여전히 로그인 필요
+        self.assertEqual(self.client.get("/favicon.txt").status_code, 302)
 
     def test_wrong_password(self):
         pepar.PASSWORD = "secret"

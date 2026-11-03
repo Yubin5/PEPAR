@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 
 import translator
 
-MAX_SIDE = 2048  # 이보다 큰 이미지는 줄인다 (모델 비전 인코더가 어차피 축소한다)
+MAX_SIDE = 2048
 MAX_UPLOAD = 20 * 1024 * 1024
 
 OCR_PROMPT = (
@@ -22,7 +22,7 @@ OCR_PROMPT = (
     "with coordinates normalized to 0-1000. Transcribe the text exactly."
 )
 
-# 출력을 스키마로 강제한다 (없으면 12b가 끝을 못 내고 쓰레기 토큰을 붙인다)
+# 스키마가 없으면 12b가 끝을 못 내고 쓰레기 토큰을 붙인다
 OCR_SCHEMA = {
     "type": "array",
     "items": {
@@ -47,10 +47,10 @@ def normalize(data: bytes) -> tuple[bytes, str, int, int]:
         img.load()
     except Image.DecompressionBombError as e:
         raise translator.PeparError("이미지 해상도가 너무 큽니다.") from e
-    except Exception as e:  # noqa: BLE001 - Pillow는 형식마다 다른 예외를 낸다
+    except Exception as e:  # noqa: BLE001
         print(f"[pepar] 이미지 열기 실패: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
         raise translator.PeparError("이미지를 열 수 없습니다. 지원하는 형식(PNG, JPEG, WebP 등)인지, 파일이 손상되지 않았는지 확인해 주세요.") from e
-    photo = (img.format or "").upper() in ("JPEG", "MPO")  # 사진은 JPEG으로, 나머지(스크린샷·도표)는 PNG로
+    photo = (img.format or "").upper() in ("JPEG", "MPO")
     img = ImageOps.exif_transpose(img)
     img.thumbnail((MAX_SIDE, MAX_SIDE))
     buf = io.BytesIO()
@@ -89,7 +89,7 @@ def extract(model: str, img: Image.Image) -> list[dict]:
     body = {
         "model": model,
         "temperature": 0,
-        # 정상 조각은 800토큰 안쪽이라 반복에 빠지면 일찍 끊는다 (잘려도 완성된 라벨은 살린다)
+        # 반복에 빠지면 일찍 끊는다 (정상 조각은 800토큰 안쪽)
         "max_tokens": 2048,
         "chat_template_kwargs": {"enable_thinking": False},
         "response_format": {"type": "json_schema", "json_schema": {"name": "labels", "schema": OCR_SCHEMA}},
@@ -108,7 +108,6 @@ def extract(model: str, img: Image.Image) -> list[dict]:
     try:
         raw = json.loads(content[content.find("[") : content.rfind("]") + 1])
     except ValueError:
-        # 길이 제한에 걸려 배열이 닫히지 않았으면 완성된 객체까지만 살린다
         raw = [json.loads(m) for m in re.findall(r'\{[^{}]*"box_2d"[^{}]*\}', content)]
     labels = []
     for o in raw:
@@ -118,19 +117,18 @@ def extract(model: str, img: Image.Image) -> list[dict]:
             continue
         y1, x1, y2, x2 = (min(max(float(v), 0), 1000) / 1000 for v in box)
         x1, x2, y1, y2 = min(x1 * sx, 1), min(x2 * sx, 1), min(y1 * sy, 1), min(y2 * sy, 1)
-        if x2 <= x1 or y2 <= y1:  # 채운 부분에만 걸친 박스도 여기서 빠진다
+        if x2 <= x1 or y2 <= y1:
             continue
         labels.append({"text": text, "box": [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)]})
     return labels
 
 
-# 큰 이미지는 여백(빈 줄)을 따라 조각으로 나눠 따로 읽는다 (통째로 보내면 모델이 줄여 보느라 작은 글자를 틀리거나 지어낸다).
-# 여백이 없을 때만 겹치게 억지로 자르고, 그 경계에 걸린 라벨은 버린다.
+# 큰 이미지는 여백을 따라 조각으로 나눠 읽는다 (통째로는 작은 글자를 틀리거나 지어낸다)
 
-TILE = 1024  # 가로세로가 이보다 큰 영역은 나눈다
-MIN_GAP = 6  # 이만큼 이상 이어진 빈 줄에서만 자른다 (낱말 사이 빈칸보다 넓게)
-OVERLAP = 160  # 억지로 자를 때 두 조각이 겹치는 폭. 글자 한 줄 높이보다 넉넉하게
-EDGE = 8  # 억지로 자른 경계에서 이만큼 안쪽까지 닿은 라벨은 잘린 것으로 본다
+TILE = 1024
+MIN_GAP = 6
+OVERLAP = 160
+EDGE = 8
 
 
 def _uniform(hist: list[int], n: int) -> bool:
@@ -168,7 +166,7 @@ def _cut(flags: list[bool], min_gap: int = MIN_GAP) -> int | None:
     n, best = len(flags), None
     for a, b in _runs(flags):
         if a == 0 or b == n or b - a < min_gap:
-            continue  # 가장자리 여백은 자를 곳이 아니다
+            continue
         c = (a + b) // 2
         if best is None or min(c, n - c) > min(best, n - best):
             best = c
@@ -183,10 +181,10 @@ def _trim(gray: Image.Image, box, hard):
         return None
     ny0, ny1 = y0 + rows[0], y0 + rows[-1] + 1
     cols = [i for i, b in enumerate(_blank(gray, (x0, ny0, x1, ny1), 1)) if not b]
-    if not cols:  # 행에는 다른 색이 있지만 어느 열도 내용으로 볼 만큼은 아니다: 얇은 선이나 그라데이션
+    if not cols:
         return None
     nx0, nx1 = x0 + cols[0], x0 + cols[-1] + 1
-    pad = 4  # 글자 바로 옆에서 자르지 않도록
+    pad = 4
     nb = (max(x0, nx0 - pad), max(y0, ny0 - pad), min(x1, nx1 + pad), min(y1, ny1 + pad))
     nh = tuple(h and nb[i] == box[i] for i, h in enumerate(hard))
     return nb, nh
@@ -210,9 +208,8 @@ def _tiles(gray: Image.Image, box, hard=(False,) * 4, out=None) -> list:
     if w <= TILE and h <= TILE:
         out.append((box, hard))
         return out
-    # 긴 쪽부터 빈 줄을 찾고, 없으면 다른 쪽이라도
     for axis in sorted((0, 1), key=lambda a: -(h if a == 0 else w)):
-        # 세로로 자를 때는 글자 한 줄 높이보다 넓은 빈칸에서만 (큰 글씨의 쉼표 뒤 빈칸에서 줄이 잘린 적이 있다)
+        # 세로로는 글자 한 줄 높이보다 넓은 빈칸에서만 자른다
         c = _cut(_blank(gray, box, axis), MIN_GAP if axis == 0 else max(MIN_GAP, _line_height(gray, box)))
         if c is None:
             continue
@@ -223,12 +220,10 @@ def _tiles(gray: Image.Image, box, hard=(False,) * 4, out=None) -> list:
             _tiles(gray, (x0, y0, x0 + c, y1), hard[:2] + (False,) + hard[3:], out)
             _tiles(gray, (x0 + c, y0, x1, y1), (False,) + hard[1:], out)
         return out
-    # 빈 줄이 없다. 한도를 조금 넘는 정도면 통째로 읽는다: 억지로 자르면 경계를 가로지르는 긴 줄은
-    # 양쪽 조각에서 모두 경계에 닿아 버려진다
+    # 한도를 조금 넘는 정도면 통째로 (억지로 자르면 경계를 가로지르는 긴 줄이 양쪽에서 버려진다)
     if max(w, h) <= TILE * 1.5:
         out.append((box, hard))
         return out
-    # 그보다 크면 긴 쪽을 반으로, 겹치게 자른다
     if h >= w:
         m = y0 + h // 2
         _tiles(gray, (x0, y0, x1, m + OVERLAP // 2), hard[:3] + (True,), out)
@@ -263,7 +258,7 @@ def _dedupe(labels: list[dict]) -> list[dict]:
     return kept
 
 
-REPEAT = 3  # 한 조각에서 같은 글자가 이만큼 나오면 모델이 지어낸 것으로 본다
+REPEAT = 3
 
 
 def _drop_repeats(labels: list[dict]) -> list[dict]:
@@ -285,16 +280,12 @@ CJK = re.compile(r"[぀-ヿ㐀-鿿가-힣]")
 
 def _join(a: str, b: str) -> str:
     if a.endswith("-") and b[:1].islower():
-        return a[:-1] + b  # 줄 끝에서 끊긴 낱말
+        return a[:-1] + b
     return a + ("" if CJK.match(a[-1:]) and CJK.match(b[:1]) else " ") + b
 
 
 def _blocks(labels: list[dict], W: int, H: int, paragraphs: bool = False) -> list[dict]:
-    """여러 줄 문단을 줄마다 따로 번역하면 문장이 끊기고 덮개가 겹친다. 바로 아래·비슷한 글자 크기·왼쪽이나 가운데 정렬인 줄은 한 문단으로 합친다. lines는 합친 줄 수.
-
-    paragraphs: PDF처럼 문단 사이에 빈 줄 없이 들여쓰기만 있는 글에서, 왼쪽 정렬된 줄이라도 앞 줄이 짧게 끝났거나
-    (문단의 마지막 줄) 이 줄이 들여 써졌으면(문단의 첫 줄) 새 문단으로 본다.
-    """
+    """줄을 문단으로 합친다 (lines: 합친 줄 수). paragraphs면 들여쓴 줄·짧은 끝줄에서 문단을 나눈다 (PDF)."""
     px = lambda b: (b[0] * W, b[1] * H, b[2] * W, b[3] * H)  # noqa: E731
     blocks = []
     for lb in sorted(labels, key=lambda lb: (lb["box"][1], lb["box"][0])):
@@ -304,15 +295,14 @@ def _blocks(labels: list[dict], W: int, H: int, paragraphs: bool = False) -> lis
         for bl in reversed(blocks):
             lx1, ly1, lx2, ly2 = bl["last"]
             lh = ly2 - ly1
-            # 줄 간격이 줄 높이의 0.6배 이내이고 글자 크기가 거의 같을 때만 (제목 아래 별점 줄 같은 건 따로 둔다)
-            # 크기는 여유 있게 본다 (밈의 두 줄 자막을 모델이 68px, 88px로 돌려주기도 한다)
+            # 바로 아래, 간격 0.6줄 이내, 크기가 비슷한 줄만
             if not (ly1 < y1 and y1 - ly2 < 0.6 * lh and 0.7 < h / lh < 1.4):
                 continue
             bx1, _, bx2, _ = px(bl["box"])
             left = abs(x1 - bx1) < 1.5 * lh
             aligned = left or abs((x1 + x2) / 2 - (bx1 + bx2) / 2) < 1.5 * lh
             if paragraphs and left and (x1 - bx1 > 0.5 * lh or lx2 < bx2 - 3 * lh):
-                break  # 새 문단
+                break
             if aligned and min(x2, bx2) > max(x1, bx1):
                 target = bl
                 break
@@ -326,7 +316,7 @@ def _blocks(labels: list[dict], W: int, H: int, paragraphs: bool = False) -> lis
         target["last"] = (x1, y1, x2, y2)
         target["lefts"].append(x1)
         target["mids"].append((x1 + x2) / 2)
-    for bl in blocks:  # 줄의 왼쪽 끝보다 가운데가 더 잘 맞으면 가운데 정렬 (밈 자막, 제목)
+    for bl in blocks:
         spread = lambda v: max(v) - min(v)  # noqa: E731
         if bl["lines"] > 1 and spread(bl["lefts"]) > 0.1 * bl["h"] and spread(bl["mids"]) < 0.5 * spread(bl["lefts"]):
             bl["align"] = "center"
@@ -348,7 +338,7 @@ def read_image(model: str, data: bytes, on_progress) -> list[dict]:
         for lb in extract(model, img.crop((x0, y0, x1, y1))):
             bx1, by1, bx2, by2 = lb["box"][0] * tw, lb["box"][1] * th, lb["box"][2] * tw, lb["box"][3] * th
             if (hard[0] and bx1 < EDGE) or (hard[1] and by1 < EDGE) or (hard[2] and bx2 > tw - EDGE) or (hard[3] and by2 > th - EDGE):
-                continue  # 억지로 자른 경계에 걸림 → 옆 조각의 온전한 것을 쓴다
+                continue
             box = [round((x0 + bx1) / W, 4), round((y0 + by1) / H, 4), round((x0 + bx2) / W, 4), round((y0 + by2) / H, 4)]
             labels.append({"text": lb["text"], "box": box, "tile": t, "order": len(labels)})
     labels = _dedupe(_drop_repeats(labels))
@@ -383,10 +373,8 @@ def run(model: str, data: bytes, on_progress, checkpoint=None, lang: str = "ko")
 
 
 def translate_labels(model: str, labels: list[dict], on_progress, lang: str, kind: str, save=lambda: None) -> int:
-    """라벨마다 번역문을 "ko" 키에 채운다 (언어와 상관없이 이 키: 예전 결과 파일과 맞추려고). 이미 있는 것은 건너뛴다.
-    숫자·기호뿐인 라벨은 번역할 게 없으니 원문 그대로 둔다. 묶음마다 save()를 부른다. 실패한 라벨 수를 돌려준다."""
-    # PDF 문단에 수식이 있으면 src에 수식 자리를 <x0/>로 바꾼 글이 있다 (모델이 수식을 건드리지 않도록).
-    # keep은 수식뿐인 문단: 번역하지 않고 원본을 둔다
+    """라벨마다 번역문을 "ko" 키에 채우고, 실패한 라벨 수를 돌려준다."""
+    # src: 수식 자리를 <x0/>로 바꾼 글, keep: 수식뿐인 문단 (번역하지 않는다)
     def need(lb):
         return not lb.get("keep") and translator.worth(translator.TOKEN.sub("", lb.get("src", lb["text"])), lang)
 

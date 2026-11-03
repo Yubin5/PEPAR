@@ -1,15 +1,12 @@
-# 설정은 이 폴더의 config.toml 하나로
 services:
   pepar:
     build: .
     init: true
-    # 이 컴퓨터의 네트워크를 그대로 쓴다: 주소·포트는 config.toml의 host·port를 따르고,
-    # 127.0.0.1에만 열린 LLM 서버에도 바로 닿는다
+    # 주소·포트는 config.toml을 따르고, 127.0.0.1에만 열린 LLM 서버에도 닿는다
     network_mode: host
     volumes:
       - pepar-cache:/app/cache
-      # 파일 하나(./config.toml)를 연결하면, 그 파일이 없을 때 Docker가 같은 이름의 빈 폴더를 만들어 버린다.
-      # 그래서 이 폴더 전체를 읽기 전용으로 연결하고, 그 안의 config.toml을 읽는다
+      # 파일 하나를 연결하면 그 파일이 없을 때 Docker가 빈 폴더를 만든다: 폴더째 연결
       - .:/app/conf:ro
     restart: unless-stopped
 volumes:

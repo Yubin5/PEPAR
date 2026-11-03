@@ -34,8 +34,7 @@ def load(config: str | None = None, **env):
 
 class ConfigTest(unittest.TestCase):
     def test_shipped_config_matches_defaults(self):
-        # 레포에 들어 있는 config.toml(기본값)이 코드의 기본값과 같아야 한다. 작업 폴더의 파일은 각자 고친
-        # 실제 설정일 수 있어서, 깃에 등록된 내용을 읽는다
+        # 작업 폴더의 config.toml은 실제 설정일 수 있어 깃에 등록된 것을 읽는다
         import subprocess
 
         import config
@@ -69,7 +68,6 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(load()["llm_url"], "http://127.0.0.1:8080/v1/chat/completions")
 
     def test_directory_in_place_of_file_is_ignored(self):
-        # 파일이 없을 때 Docker가 만든 config.toml 폴더: 죽지 않고 기본값으로 뜬다
         import io
         from contextlib import redirect_stderr
         saved = os.environ.get("PEPAR_CONFIG")

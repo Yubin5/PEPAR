@@ -1,9 +1,4 @@
-"""PDF: 쪽마다 그림으로 그리고, 텍스트 레이어에서 줄과 위치를 꺼내 문단으로 묶은 뒤 번역한다.
-
-보기 화면은 이미지 번역과 같다: 쪽 그림 위의 문단 자리에 번역문을 덮는다.
-텍스트 레이어가 있으면 글자와 위치를 PDF에서 그대로 가져오므로 OCR처럼 잘못 읽거나 어긋나지 않는다.
-텍스트 레이어가 없는 쪽(스캔본)만 그림을 OCR로 읽는다.
-"""
+"""PDF: 쪽 그림 위의 문단 자리에 번역문을 덮는다. 글자와 위치는 텍스트 레이어에서, 스캔 쪽만 OCR."""
 
 import ctypes
 import hashlib
@@ -23,9 +18,9 @@ import ocr
 import translator
 
 MAX_PAGES = 80
-RENDER_WIDTH = 1400  # 쪽 그림의 가로 픽셀
-MIN_CHARS = 20  # 텍스트 레이어의 글자가 이보다 적은 쪽은 스캔본으로 보고 OCR
-# 같은 줄로 잇는 가로 간격의 한도 (글꼴 크기 배수). 굵은 머리말 뒤 빈칸이 1.1배쯤, 두 단 논문의 단 사이가 1.7배쯤이다
+RENDER_WIDTH = 1400
+MIN_CHARS = 20
+# 같은 줄로 잇는 가로 간격 한도 (글꼴 크기 배수)
 JOIN_GAP = 1.2
 
 
@@ -65,13 +60,10 @@ def _clean(text: str) -> str:
 
 
 # ---------------------------------------------------------------- 수식
-# 수식은 글꼴로 알아본다: LaTeX 수식 글꼴(CMMI 이탤릭, CMSY 기호, CMEX 큰 기호, MSAM·MSBM 칠판체 등)과
-# 이름에 Math가 들어간 글꼴. 바로 선 수식 글자(CMR)는 본문 글꼴이 CM이 아닐 때만 수식으로 본다
-# (CM 본문 논문에서는 CMR이 본문이다).
+# 수식은 글꼴로 알아본다 (CMR은 본문이 CM이 아닐 때만)
 MATH_FONT = re.compile(r"^(CMMI|CMSY|CMEX|CMBSY|MSAM|MSBM|EUFM|EUSM|EURM|RSFS|STMARY|WASY)|MATH", re.I)
 MATH_ITALIC = re.compile(r"^CMMI|MATH.*ITAL|ITAL.*MATH", re.I)
 UPRIGHT_MATH = re.compile(r"^CMR", re.I)
-# 줄 글 안에서 수식 자리 표시 (문단으로 묶은 뒤 <x0/> 같은 번역 표시로 바꾼다)
 MARK = re.compile("\ue000(\\d+)\ue001")
 
 
@@ -79,7 +71,7 @@ def _font(tp, i: int) -> str:
     buf = ctypes.create_string_buffer(128)
     flags = ctypes.c_int()
     pdfium_raw.FPDFText_GetFontInfo(tp.raw, i, buf, 128, ctypes.byref(flags))
-    return buf.value.decode("latin-1").split("+")[-1]  # 부분 글꼴 표시(ABCDEF+)는 뺀다
+    return buf.value.decode("latin-1").split("+")[-1]
 
 
 _DOUBLE_STRUCK = {"C": "ℂ", "H": "ℍ", "N": "ℕ", "P": "ℙ", "Q": "ℚ", "R": "ℝ", "Z": "ℤ"}
@@ -93,8 +85,7 @@ def _math_char(ch: str, font: str) -> str:
 
 
 def _runs(chars: list[tuple[str, str]]) -> list[list[str]]:
-    """[(글자, 모양)] → 모양이 같은 글자끼리 묶은 [[글, 모양]]. 모양: i 이탤릭, ^ 위첨자, _ 아래첨자.
-    위·아래첨자 앞의 띄어쓰기는 뺀다 (pdfium이 첨자마다 끼워 넣어 W Q i처럼 벌어진다)."""
+    """[(글자, 모양)] → [[글, 모양]] (i 이탤릭, ^ 위첨자, _ 아래첨자). 첨자 앞 띄어쓰기는 뺀다."""
     chars = [(ch, st) for k, (ch, st) in enumerate(chars)
              if not (ch == " " and k + 1 < len(chars) and chars[k + 1][1][-1:] in ("^", "_"))]
     out = []
@@ -106,7 +97,7 @@ def _runs(chars: list[tuple[str, str]]) -> list[list[str]]:
     if out:
         out[0][0] = out[0][0].lstrip()
         out[-1][0] = out[-1][0].rstrip()
-    for r in out:  # 안전장치: 혹시 남은 반쪽 글자(짝 없는 서로게이트)는 뺀다
+    for r in out:
         r[0] = ocr.clean(r[0])
     return [r for r in out if r[0]]
 
@@ -116,12 +107,11 @@ def _plain(runs: list[list[str]]) -> str:
 
 
 def _line_text(chars: list[dict], cm_body: bool, maths: list) -> str:
-    """줄의 글자들 → 글. 수식 글자가 이어진 부분은 maths에 [[글, 모양]]으로 넣고 그 자리에 표시를 둔다.
-    위·아래첨자는 글자 크기(본문의 85% 미만)와 높이로 가린다."""
+    """줄의 글자들 → 글. 수식 부분은 maths에 넣고 그 자리에 표시를 둔다."""
     is_math = [bool(MATH_FONT.search(c["font"]) or (not cm_body and UPRIGHT_MATH.match(c["font"]))) for c in chars]
-    base = sorted(c["size"] for c in chars)[len(chars) // 2]  # 줄의 보통 글자 크기 (수식뿐인 줄도 있어 전체에서)
+    base = sorted(c["size"] for c in chars)[len(chars) // 2]
     full = [c["y2"] for c in chars if c["size"] >= 0.9 * base] or [c["y2"] for c in chars]
-    baseline = sorted(full)[len(full) // 2]  # 글자 아래쪽(기준선) 높이
+    baseline = sorted(full)[len(full) // 2]
 
     def position(c) -> str:
         if c["size"] < 0.85 * base:
@@ -131,14 +121,13 @@ def _line_text(chars: list[dict], cm_body: bool, maths: list) -> str:
                 return "_"
         return ""
 
-    # 본문 글꼴로 쓴 수식 조각도 수식에 붙인다: 수식 바로 뒤의 작은 위·아래첨자(d_model의 model),
-    # 수식 글자 사이에 띄어쓰기 없이 낀 기호(step_num의 _)
+    # 본문 글꼴로 쓴 수식 조각(d_model의 model, step_num의 _)도 수식에 붙인다
     for k, c in enumerate(chars):
         if is_math[k] or k == 0 or not is_math[k - 1]:
             continue
         glued = (not c["space"] and k + 1 < len(chars) and is_math[k + 1] and not chars[k + 1]["space"]
                  and not c["ch"].isalnum())
-        if position(c) or glued:  # 첨자는 앞에 띄어쓰기가 있어도 (pdfium이 끼워 넣는다)
+        if position(c) or glued:
             is_math[k] = True
     out, run = [], None
 
@@ -169,9 +158,7 @@ def _line_text(chars: list[dict], cm_body: bool, maths: list) -> str:
 
 
 def finish(labels: list[dict], maths: list) -> list[dict]:
-    """문단으로 묶은 뒤: 수식 표시를 번역용 <x0/>, <x1/>…로 바꾼다.
-    text: 수식을 풀어 쓴 글 (목록·검색용), src: 번역할 글 (수식 자리는 표시), math: 표시마다 수식 [[글, 모양]].
-    수식뿐인 문단(본문 글자가 2자 미만)은 keep: 번역하지 않고 원본을 그대로 둔다."""
+    """수식 표시를 <x0/>…로 바꾼다 (text: 풀어 쓴 글, src: 번역할 글, math: 수식, keep: 수식뿐인 문단)."""
     for lb in labels:
         idx = [int(n) for n in MARK.findall(lb["text"])]
         if not idx:
@@ -187,13 +174,7 @@ def finish(labels: list[dict], maths: list) -> list[dict]:
 
 
 def page_lines(page) -> tuple[list[dict], list]:
-    """쪽의 글줄 [{text, box, size}]과 수식 목록. box는 쪽 크기에 대한 0~1 비율 [x1, y1, x2, y2] (왼쪽 위 기준).
-    text 안의 수식 자리에는 표시(\\ue000번호\\ue001)가 있다 → finish()로 문단마다 정리한다.
-
-    글자 하나씩 위치를 받아 줄을 만든다 (pdfium이 주는 줄 조각은 링크 글자 둘레에서 엉뚱하게 끊긴다).
-    pdfium은 줄이 끝났다고 보면 \\r\\n을 끼워 넣는데, 수식의 위·아래첨자마다 끼워 넣어서 믿지 않는다.
-    왼쪽으로 돌아가거나, 높이가 바뀌거나, 단 사이처럼 멀리 건너뛰면 새 줄로 본다. 돌아간 글자(arXiv 여백의 세로 도장)는 뺀다.
-    """
+    """쪽의 글줄 [{text, box, size}]과 수식 목록. box는 쪽 크기에 대한 0~1 비율 [x1, y1, x2, y2]."""
     W, H = page.get_size()
     tp = page.get_textpage()
     lines, cur = [], None
@@ -207,13 +188,12 @@ def page_lines(page) -> tuple[list[dict], list]:
         n_chars = tp.count_chars()
         pair_tail = False
         for i in range(n_chars):
-            if pair_tail:  # 바로 앞 글자와 합친 뒤쪽 반쪽
+            if pair_tail:
                 pair_tail = False
                 continue
             code = pdfium_raw.FPDFText_GetUnicode(tp.raw, i)
             boxes = [i]
-            # 기본 범위 밖의 글자(수학 영숫자 𝑥, 𝒪 등)는 반쪽 둘(서로게이트 쌍)로 나온다: 하나로 합친다.
-            # 짝이 없는 반쪽은 버린다 (그대로 두면 저장할 때 UTF-8로 쓰지 못해 작업이 실패한다)
+            # 기본 범위 밖 글자(𝑥 등)는 반쪽 둘로 나온다: 합치고, 짝 없는 반쪽은 버린다
             if 0xD800 <= code <= 0xDBFF and i + 1 < n_chars:
                 low = pdfium_raw.FPDFText_GetUnicode(tp.raw, i + 1)
                 if 0xDC00 <= low <= 0xDFFF:
@@ -225,17 +205,15 @@ def page_lines(page) -> tuple[list[dict], list]:
             ch = chr(code) if code else ""
             if abs(math.sin(pdfium_raw.FPDFText_GetCharAngle(tp.raw, i))) > 0.1:
                 continue
-            if not ch or ch.isspace():  # \r\n도 띄어쓰기로만 본다 (줄 끝은 위치로)
+            if not ch or ch.isspace():  # pdfium의 \r\n은 첨자마다 끼어 있어 줄 끝으로 믿지 않는다
                 if cur:
                     cur["space"] = True
                 continue
-            # 합친 글자는 두 반쪽 중 크기가 있는 쪽 상자를 쓴다
             left, bottom, right, top = next((b for b in (tp.get_charbox(k) for k in boxes) if b[2] > b[0] or b[3] > b[1]),
                                             tp.get_charbox(i))
             if right <= left and top <= bottom:
                 continue
             x1, y1, x2, y2 = left, H - top, right, H - bottom
-            # 거리 기준은 글꼴 크기로 (글자 상자 높이는 x 높이 정도라 너무 작다)
             fs = pdfium_raw.FPDFText_GetFontSize(tp.raw, i) or (y2 - y1)
             font = _font(tp, i)
             fonts[font] += 1
@@ -244,7 +222,7 @@ def page_lines(page) -> tuple[list[dict], list]:
                 mid = (y1 + y2) / 2
                 same_row = cur["y1"] - 0.3 * lh <= mid <= cur["y2"] + 0.3 * lh
                 gap = x1 - cur["x2"]
-                # 위첨자와 아래첨자가 같은 자리에 겹쳐 있으면(d_model^−0.5) 왼쪽으로 돌아가도 같은 줄이다
+                # 겹친 위·아래첨자(d_model^−0.5)는 왼쪽으로 돌아가도 같은 줄
                 stacked = fs < 0.85 * lh and x1 > cur["x1"] and cur["y1"] - 0.6 * lh <= mid <= cur["y2"] + 0.6 * lh
                 if not stacked and (not same_row or gap < -lh or gap > JOIN_GAP * lh):
                     flush()
@@ -259,7 +237,7 @@ def page_lines(page) -> tuple[list[dict], list]:
         flush()
     finally:
         tp.close()
-    # 같은 높이에서 바로 옆에 있는 줄은 잇는다: 굵은 글씨의 머리말("Encoder:")처럼 문서 순서상 줄 뒤에 나오는 글자가 있다
+    # 같은 높이 바로 옆 줄은 잇는다 (문서 순서상 뒤에 나오는 굵은 머리말)
     merged = []
     for ln in sorted(lines, key=lambda ln: ln["x1"]):
         for m in merged:
@@ -274,13 +252,13 @@ def page_lines(page) -> tuple[list[dict], list]:
         else:
             merged.append(ln)
     lines = sorted(merged, key=lambda ln: (ln["y1"], ln["x1"]))
-    cm_body = bool(fonts) and bool(UPRIGHT_MATH.match(fonts.most_common(1)[0][0]))  # 본문이 CM 글꼴인 논문
+    cm_body = bool(fonts) and bool(UPRIGHT_MATH.match(fonts.most_common(1)[0][0]))
     maths: list = []
     out = []
     for ln in lines:
         text = _clean(_line_text(ln["chars"], cm_body, maths))
         if text:
-            out.append({"text": text, "size": round(ln["h"], 1),  # 글꼴 크기 (제목 찾기에 쓴다. 문단으로 묶으면 빠진다)
+            out.append({"text": text, "size": round(ln["h"], 1),
                         "box": [round(ln["x1"] / W, 4), round(ln["y1"] / H, 4), round(ln["x2"] / W, 4), round(ln["y2"] / H, 4)]})
     return out, maths
 
@@ -344,14 +322,14 @@ def read(model: str, pdf_path: Path, pages_dir: Path, on_progress) -> list[dict]
             if chars >= MIN_CHARS:
                 lines, maths = page_lines(page)
                 pages.append({"labels": finish(ocr._blocks(lines, W, H, paragraphs=True), maths), "ocr": False})
-                pages[-1]["pt"] = [round(W, 2), round(H, 2)]  # 쪽 크기(포인트). 번역본을 PDF로 저장할 때 원본과 같은 크기로
+                pages[-1]["pt"] = [round(W, 2), round(H, 2)]
             else:
                 try:
                     labels = ocr.read_image(model, (pages_dir / f"{n}.png").read_bytes(), lambda *a: None)
                     pages.append({"labels": labels, "ocr": True, "pt": [round(W, 2), round(H, 2)]})
                 except translator.PeparError:
                     raise
-                except Exception as e:  # noqa: BLE001 - 비전이 안 되는 모델 등. 그 쪽만 원문으로 둔다
+                except Exception as e:  # noqa: BLE001
                     print(f"[pepar] PDF {n}쪽 OCR 실패: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
                     pages.append({"labels": [], "ocr": True, "error": f"{n}쪽은 글자 레이어가 없는 스캔 쪽인데, 이미지를 읽지 못했습니다 (이미지를 읽는 모델이 필요합니다)."})
             page.close()
@@ -376,7 +354,7 @@ def run(model: str, pdf_path: Path, pages_dir: Path, on_progress, checkpoint=Non
         saved = {"pages": pages}
         if checkpoint:
             checkpoint.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
-    labels = [lb for pg in pages for lb in pg["labels"]]  # 같은 dict라 번역문이 쪽 목록에 그대로 들어간다
+    labels = [lb for pg in pages for lb in pg["labels"]]
     if not labels:
         raise translator.PeparError("PDF에서 글자를 찾지 못했습니다.")
 

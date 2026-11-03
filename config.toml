@@ -3,15 +3,14 @@ host = ["127.0.0.1"]
 port = 8000
 
 # llama.cpp server: address and port are enough (/v1/chat/completions is added).
-llm_url = "http://127.0.0.1:8080"  # llama.cpp(llama-server) 기본 포트
+llm_url = "http://127.0.0.1:8080"
 
 cache_dir = "cache"
 
 # login password. Empty = no authentication. 5 wrong tries lock an IP for 15 minutes.
 password = ""
 
-# proxies whose CF-Connecting-IP header is trusted (Cloudflare Tunnel on this host: ["127.0.0.1", "::1"]).
-# Leave empty when not behind such a proxy, otherwise clients could fake their IP.
+# proxies whose CF-Connecting-IP header is trusted (e.g. Cloudflare Tunnel on this host: ["127.0.0.1", "::1"]); leave empty otherwise
 trusted_proxies = []
 
 # allow translating localhost / LAN / Tailscale addresses (off blocks them)

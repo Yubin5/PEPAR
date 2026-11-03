@@ -24,12 +24,9 @@ MAX_BLOCKS = 3000
 
 ARXIV_ID = re.compile(r"(\d{4}\.\d{4,5})(v\d+)?")
 BARE_ARXIV_ID = re.compile(r"^(?:arxiv:)?(\d{4}\.\d{4,5}(?:v\d+)?)$", re.I)
-# LLM에 보내는 자리표시 태그
-#   <x3/>        통째로 보존한 요소 (수식, 인용, 코드, 이미지 등)
-#   <t3>…</t3>   링크·강조. 모델이 번역문의 알맞은 낱말을 감싸도록 한다
-# 그룹: 1=닫는 태그면 "/", 2=종류(t|x), 3=번호
+# LLM에 보내는 자리표시: <x3/> 보존할 요소, <t3>…</t3> 링크·강조
 TOKEN = re.compile(r"<(/?)([tx])(\d+)\s*/?>")
-OLD_TOKEN = re.compile(r"⟦(/?)(\d+)⟧")  # 예전 체크포인트 형식
+OLD_TOKEN = re.compile(r"⟦(/?)(\d+)⟧")
 
 UA_PEPAR = {"User-Agent": "pepar/0.1 (personal paper translator)"}
 UA_BROWSER = {
@@ -42,9 +39,9 @@ UA_BROWSER = {
 
 @dataclass
 class Source:
-    kind: str  # "arxiv" | "web" | "image"
-    key: str  # 캐시/URL에 쓰는 식별자: "2412.13742" 또는 "w-<hash>"
-    url: str  # web이면 원본 URL, arxiv면 논문 ID
+    kind: str  # "arxiv" | "web" | "image" | "text" | "pdf"
+    key: str
+    url: str
 
 
 class PdfFound(Exception):
@@ -60,7 +57,7 @@ def unwrap_viewer(url: str) -> str:
     u = urlparse(url)
     q = parse_qs(u.query)
     if u.path.endswith("viewer.html") and q.get("file"):
-        return urljoin(url, q["file"][0])  # PDF.js: file은 뷰어 기준 상대 경로일 수 있다
+        return urljoin(url, q["file"][0])  # 뷰어 기준 상대 경로일 수 있다
     if u.hostname in ("docs.google.com", "drive.google.com") and ("viewer" in u.path or "gview" in u.path) and q.get("url"):
         return q["url"][0]
     return url
@@ -100,14 +97,14 @@ def parse_source(text: str, pdf: bool = False) -> Source:
 @dataclass
 class Doc:
     soup: BeautifulSoup
-    url: str  # 상대 경로 해석 기준
-    key: str  # arXiv면 버전 포함 ID로 확정됨
+    url: str
+    key: str
     kind: str
     title: str
     context: str
     items: list = field(default_factory=list)
-    keep_scripts: bool = False  # web: 사이트 스크립트를 살려 두고 번역은 브라우저에서 다시 입힌다
-    lang: str = "ko"  # 번역할 언어 (LANGS의 코드)
+    keep_scripts: bool = False
+    lang: str = "ko"
 
 
 ARXIV_BLOCKS = "article.ltx_document p.ltx_p, article.ltx_document .ltx_title, article.ltx_document figcaption"
@@ -153,7 +150,7 @@ def load_arxiv(src: Source, lang: str = "ko") -> Doc:
     except requests.RequestException as e:
         raise PeparError(f"arXiv에서 논문을 가져오지 못했습니다: {describe_request_error(e)}") from e
     if r.status_code == 404:
-        # HTML 버전이 없는 논문(LaTeX → HTML 변환 실패)은 PDF로 번역한다
+        # HTML 버전이 없는 논문은 PDF로
         try:
             p = requests.get(f"https://arxiv.org/pdf/{src.url}", headers=UA_PEPAR, timeout=120)
         except requests.RequestException as e:
@@ -214,13 +211,11 @@ def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: s
         base = urljoin(r.url, soup.base["href"])
         soup.base.decompose()
     if not keep_scripts:
-        # 정적 모드: 스크립트가 다시 렌더링하면서 번역을 원문으로 덮어쓰지 않도록 제거한다.
-        # 대신 스크립트로 그리는 영역(상품 목록, 탭 등)은 비거나 동작하지 않는다.
+        # 스크립트가 다시 그리며 번역을 덮어쓰지 않도록 지운다
         for t in soup(["script", "noscript"]):
             t.decompose()
     for meta in soup.find_all("meta", attrs={"http-equiv": re.compile("content-security-policy", re.I)}):
         meta.decompose()
-    # lazy-load 이미지는 스크립트 없이도 보이게
     for img in soup.find_all("img"):
         lazy = img.get("data-src") or img.get("data-lazy-src")
         if lazy and (not img.get("src") or img["src"].startswith("data:")):
@@ -237,14 +232,12 @@ def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: s
     doc = Doc(soup, base, src.key, "web", title, "\n".join(parts), keep_scripts=keep_scripts, lang=lang)
     blocks = root.select(WEB_BLOCKS)
     block_ids = {id(b) for b in blocks}
-    # 가장 안쪽 블록만 번역 단위로 쓴다
     has_inner = {id(p) for b in blocks for p in b.parents if id(p) in block_ids}
     for el in blocks:
         if id(el) in has_inner:
             continue
         if el.find_parent(WEB_SKIP) or el.find_parent(attrs={"role": SKIP_ROLES}) or el.get("aria-hidden") == "true":
             continue
-        # 다른 언어판으로 가는 링크(위키백과의 언어 목록 등)는 번역하지 않는다
         lang_link = el.find(lambda t: t.name == "a" and (t.get("hreflang") or t.get("lang")))
         if lang_link and _text(lang_link) == _text(el):
             continue
@@ -259,7 +252,7 @@ def load_web(src: Source, keep_scripts: bool = settings["keep_scripts"], lang: s
 
 # ---------------------------------------------------------------- 붙여넣은 텍스트
 
-TEXT_MAX = 200_000  # 글자 수
+TEXT_MAX = 200_000
 _BULLET = re.compile(r"^\s*([-*•·▪◦‣]|\d+[.)]|[a-zA-Z][.)])\s")
 _CJK_END = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7a3]")
 TEXT_CSS = """
@@ -277,16 +270,14 @@ def _width(line: str) -> int:
 
 
 def _hard_wrapped(lines: list[str]) -> bool:
-    """PDF 등에서 복사해 일정한 폭에서 끊긴 줄들인지: 마지막 줄 말고는 모두 가장 긴 줄의 75% 이상.
-    시나 주소처럼 길이가 들쭉날쭉한 줄은 아니라고 본다."""
+    """일정한 폭에서 끊긴 줄들인지 (마지막 줄 말고는 가장 긴 줄의 75% 이상)."""
     widths = [_width(line) for line in lines]
     top = max(widths)
     return top >= 30 and all(w >= 0.75 * top for w in widths[:-1])
 
 
 def text_paragraphs(text: str) -> list[list[str]]:
-    """붙여넣은 텍스트 → 문단(빈 줄로 구분)마다 줄 목록. 일정한 폭에서 끊긴 줄은 복사하며 생긴 줄바꿈으로 보고 잇고,
-    목록이나 시·주소처럼 줄마다 의미가 있는 것은 줄을 그대로 둔다."""
+    """붙여넣은 텍스트 → 문단마다 줄 목록 (복사하며 끊긴 줄은 잇는다)."""
     text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     paras = []
     for block in re.split(r"\n\s*\n", text):
@@ -299,7 +290,7 @@ def text_paragraphs(text: str) -> list[list[str]]:
         joined = lines[0]
         for line in lines[1:]:
             if joined.endswith("-") and line[:1].islower():
-                joined = joined[:-1] + line  # 줄 끝에서 끊긴 낱말
+                joined = joined[:-1] + line
             else:
                 joined += ("" if _CJK_END.match(joined[-1]) and _CJK_END.match(line[0]) else " ") + line
         paras.append([joined])
@@ -393,7 +384,6 @@ def protect(el, atomic: str, pairs: str | None) -> tuple[str, list[str], dict[in
     return " ".join(el.get_text().split()), saved, closers
 
 
-# 번역할 언어: 코드 → (화면에 보일 이름, 모델에게 줄 영어 이름)
 LANGS = {
     "ko": ("한국어", "Korean"),
     "en": ("English", "English"),
@@ -405,7 +395,6 @@ LANGS = {
 }
 DEFAULT_LANG = "ko"
 
-# 사용자가 직접 입력한 언어: 코드 "x-<해시 8자리>" → 입력한 글. app이 파일에서 읽어 채운다
 CUSTOM_LANGS: dict[str, str] = {}
 CUSTOM_RE = re.compile(r"^x-[0-9a-f]{8}$")
 CUSTOM_MAX = 40
@@ -435,16 +424,13 @@ def lang_name(code: str) -> str:
         return LANGS[code][0]
     return CUSTOM_LANGS.get(code, code)
 
-# 번역할 가치가 있는지: 토큰을 뺀 텍스트에 번역할 언어의 문자가 아닌 글자가 2자 이상.
-# 라틴 문자 언어끼리는 문자로 구별할 수 없어서 글자가 있으면 모두 보낸다 (이미 그 언어면 모델이 그대로 돌려준다)
-# 일본어는 가나만 자기 문자로 본다. 한자만 있는 글은 중국어일 수도 있어서 보낸다 (가나가 섞여 있으면 일본어로 본다)
+# 번역할 글자가 있는지: 번역할 언어의 문자가 아닌 글자가 2자 이상 (일본어는 가나만 자기 문자)
 KANA = "\u3040-\u30ff"
 HANZI = "\u3400-\u9fff"
 _OWN_SCRIPT = {"ko": "가-힣ㄱ-ㅎㅏ-ㅣ", "ja": KANA, "zh": HANZI}
-# 글자 수는 이어져 있지 않아도 센다 ("1달 전"처럼 한 음절씩 띄어 쓴 한국어도 번역하도록)
 _WORTH = {lang: re.compile(rf"[^\W\d_{_OWN_SCRIPT.get(lang, '')}]") for lang in LANGS}
-_WORTH_ANY = re.compile(r"[^\W\d_]")  # 직접 입력한 언어: 어떤 문자가 그 언어인지 모르니 글자가 있으면 보낸다
-_WORTH_JA_TEXT = re.compile(rf"[^\W\d_{KANA}{HANZI}]")  # 가나가 있는 글: 한자도 일본어
+_WORTH_ANY = re.compile(r"[^\W\d_]")
+_WORTH_JA_TEXT = re.compile(rf"[^\W\d_{KANA}{HANZI}]")
 _HAS_KANA = re.compile(rf"[{KANA}]")
 
 
@@ -490,7 +476,6 @@ Rules:
 6. If an item is already in {lang}, return it unchanged.
 7. Output ONLY a JSON array of objects {{"id": <same id>, "text": "<{lang}>"}} covering every input id. No commentary."""
 
-# 문체 지시. 언어별로 따로 정한 것이 없으면 "*"를 쓴다. 이미지의 예시 낱말은 언어마다 다르다
 STYLE = {
     "ko": {
         "pdf": "This is a PDF document (often a paper or report). Each item is a paragraph, heading or label drawn over the "
@@ -531,7 +516,6 @@ def system_prompt(context: str, kind: str, lang: str = "ko") -> str:
         style = STYLE.get(lang, {}).get(kind) or STYLE["*"][kind]
     if lang in LANGS:
         return SYSTEM.format(lang=LANGS[lang][1], context=context, style=style)
-    # 직접 입력한 언어: 입력한 글을 그대로 언어 이름 자리에 두고, 어떻게 해석할지 알려 준다
     target = CUSTOM_LANGS[lang]
     style = (
         f'The target language was typed by the user as free text: "{target}". Interpret it as a language, dialect, '
@@ -541,14 +525,7 @@ def system_prompt(context: str, kind: str, lang: str = "ko") -> str:
 
 
 def list_models() -> list[dict]:
-    """[{id, loaded, vision}]. vision: 이미지를 읽는 모델이면 True, 못 읽으면 False, 알 수 없으면 None.
-
-    llama-server는 실행 방식에 따라 대답 형식이 다르다.
-    - 여러 모델을 설정 파일로 돌리는 방식(--models-preset): data의 모델마다 status와
-      architecture.input_modalities(["text", "image"])가 있다.
-    - 모델 하나만 띄우는 방식(-m … --mmproj …): data에는 이름·크기뿐이고, 같은 이름으로 따로 있는
-      models 목록에 capabilities(["completion", "multimodal"])가 있다. 모델은 늘 올라가 있다.
-    """
+    """[{id, loaded, vision}]. vision은 모르면 None (llama-server 실행 방식마다 대답 형식이 다르다)."""
     r = requests.get(LLM_URL.rsplit("/chat/completions", 1)[0] + "/models", timeout=5)
     r.raise_for_status()
     body = r.json()
@@ -562,13 +539,13 @@ def list_models() -> list[dict]:
         if modalities is not None:
             vision = "image" in modalities
         elif m["id"] in caps:
-            vision = "multimodal" in caps[m["id"]]  # 소리만 받는 모델에도 붙지만, 번역에 쓸 일은 드물다
+            vision = "multimodal" in caps[m["id"]]
         else:
             vision = None
         status = m.get("status")
         out.append({
             "id": m["id"],
-            "loaded": status is None or status.get("value") in ("loaded", "sleeping"),  # status가 없으면 모델 하나 방식
+            "loaded": status is None or status.get("value") in ("loaded", "sleeping"),
             "vision": vision,
         })
     return out
@@ -585,13 +562,11 @@ class Cancelled(Exception):
     """작업이 취소되었다."""
 
 
-# 지금 하는 작업이 취소되었는지. app의 작업 반복이 작업마다 바꿔 끼운다 (작업은 한 번에 하나씩)
 should_stop = lambda: False  # noqa: E731
 
 
 def _post(body: dict, attempts: int = 8, wait: int = 20) -> dict:
-    """서버 장애·모델 재로딩 중이면 기다렸다 재시도하고, 끝내 안 되면 중단한다.
-    기다리는 동안에도 취소되었는지 0.5초마다 본다 (아니면 취소해도 2분 넘게 '취소 중'으로 남았다)."""
+    """LLM에 보낸다. 서버가 안 되면 기다렸다 다시 하고, 기다리는 동안에도 취소를 본다."""
     last = detail = ""
     for n in range(attempts):
         if should_stop():
@@ -604,8 +579,7 @@ def _post(body: dict, attempts: int = 8, wait: int = 20) -> dict:
             last = f"HTTP {r.status_code}: {r.text[:200]}"
             detail = f"HTTP {r.status_code}"
         except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as e:
-            # 응답이 중간에 끊긴 것(ChunkedEncodingError)도 기다렸다 다시: 메모리 부족으로 LLM 서버가 죽었다가
-            # 다시 뜨는 경우다 (2026-11-02, PDF 번역 중 OOM으로 죽고 11초 뒤 다시 떴다)
+            # 응답이 중간에 끊긴 것(LLM 서버가 죽었다 다시 뜰 때)도 다시 시도
             last = f"{type(e).__name__}: {e}"
             detail = ("응답 시간 초과" if isinstance(e, requests.Timeout)
                       else "응답이 중간에 끊김" if isinstance(e, requests.exceptions.ChunkedEncodingError) else "연결 실패")
@@ -620,7 +594,7 @@ def _post(body: dict, attempts: int = 8, wait: int = 20) -> dict:
     )
 
 
-# 응답을 스키마로 강제한다 (llama-server가 문법 수준에서 막아 JSON이 깨지지 않는다)
+# 스키마로 강제해 JSON이 깨지지 않게
 RESPONSE_SCHEMA = {
     "type": "array",
     "items": {
@@ -680,14 +654,14 @@ def translate_batch(model: str, system: str, items: list[dict], idxs: list[int])
                 out[i] = by_id[k]
     except (requests.HTTPError, ValueError, KeyError) as e:
         print(f"[pepar] 배치 실패, 항목별로 재시도: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-    # 실패한 항목은 하나씩: 같은 온도 → 온도를 올려서 → 링크·강조 태그를 빼고(링크는 잃지만 번역은 살린다)
+    # 실패한 항목은 하나씩: 같은 온도 → 높은 온도 → 링크·강조 태그를 빼고
     for i in idxs:
         if i in out:
             continue
         text = items[i]["text"]
         attempts = [(text, 0.2, True), (text, 0.7, True)]
         if len(idxs) == 1:
-            attempts = attempts[1:]  # 배치가 이미 이 항목 하나였으면 같은 조건 재시도는 건너뜀
+            attempts = attempts[1:]
         if _strip_pairs(text) != text:
             attempts.append((_strip_pairs(text), 0.2, False))
         for src_text, temp, pairs in attempts:
@@ -864,7 +838,7 @@ def html_escape(s: str) -> str:
 
 def build(doc: Doc, translations: dict[int, str], model: str, home: str, retry_url: str | None = None) -> str:
     soup = doc.soup
-    reapply_map = {}  # 원문 텍스트 → 번역 HTML (스크립트 유지 모드에서 브라우저가 다시 입힐 때 씀)
+    reapply_map = {}
     for i, it in enumerate(doc.items):
         el = it["el"]
         el.clear()
@@ -892,7 +866,6 @@ def build(doc: Doc, translations: dict[int, str], model: str, home: str, retry_u
         meta.decompose()
     head.insert(0, BeautifulSoup('<meta charset="utf-8">', "html.parser"))
     if doc.keep_scripts:
-        # 사이트 스크립트가 상대 경로로 부르는 파일·API가 원본 사이트로 가도록
         base = soup.new_tag("base", href=doc.url)
         head.insert(1, base)
     if soup.title and soup.title.string:
