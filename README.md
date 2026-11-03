@@ -46,7 +46,7 @@
 
 ```bash
 pip install -r requirements.txt
-python app.py                         # http://127.0.0.1:8765
+python app.py                         # http://127.0.0.1:8000
 ```
 
 설정은 `config.toml` 파일 수정을 통해 하세요.
@@ -56,7 +56,7 @@ python app.py                         # http://127.0.0.1:8765
 ```bash
 git clone https://github.com/Yubin5/PEPAR.git
 cd PEPAR
-docker compose up -d                  # http://127.0.0.1:8765
+docker compose up -d                  # http://127.0.0.1:8000
 ```
 
 설정은 직접 실행할 때와 같은 `config.toml`에서 고치세요. `llm_url`은 `http://127.0.0.1:8080`처럼 주소와 포트만 적으면 되고, 컨테이너 안에서 `127.0.0.1`이 응답하지 않으면 호스트(`host.docker.internal`)로 다시 시도합니다. 캐시와 로그인 세션은 `pepar-cache` 볼륨에 남습니다.

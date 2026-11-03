@@ -1,10 +1,10 @@
 # addresses to listen on (no authentication unless password is set: keep it off the public internet)
 host = ["127.0.0.1"]
-port = 8765
+port = 8000
 
 # llama.cpp server: address and port are enough (/v1/chat/completions is added).
 # In Docker, 127.0.0.1 also tries the host machine (host.docker.internal) when it does not answer.
-llm_url = "http://127.0.0.1:9090"
+llm_url = "http://127.0.0.1:8080"  # llama.cpp(llama-server) 기본 포트
 
 cache_dir = "cache"
 

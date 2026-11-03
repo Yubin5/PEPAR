@@ -7,5 +7,5 @@ services:
     ports: !reset []
     extra_hosts: !reset []
     environment:
-      PEPAR_HOST: ""  # 비워 두면 Dockerfile의 0.0.0.0:8765 대신 config.toml의 값
+      PEPAR_HOST: ""  # 비워 두면 Dockerfile의 0.0.0.0:8000 대신 config.toml의 값
       PEPAR_PORT: ""

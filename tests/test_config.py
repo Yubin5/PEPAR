@@ -48,13 +48,13 @@ class ConfigTest(unittest.TestCase):
     def test_defaults_without_file(self):
         s = load()
         self.assertEqual(s["host"], ["127.0.0.1"])
-        self.assertEqual(s["port"], 8765)
+        self.assertEqual(s["port"], 8000)
         self.assertTrue(s["cache_dir"].is_absolute())
 
     def test_partial_file_fills_defaults(self):
         s = load('host = ["127.0.0.1", "100.1.2.3"]')
         self.assertEqual(s["host"], ["127.0.0.1", "100.1.2.3"])
-        self.assertEqual(s["port"], 8765)
+        self.assertEqual(s["port"], 8000)
 
     def test_env_overrides_file(self):
         s = load("port = 1111", PEPAR_PORT="2222", PEPAR_HOST="0.0.0.0, 127.0.0.1")
@@ -66,7 +66,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(load('llm_url = "http://h:9/v1/"')["llm_url"], "http://h:9/v1/chat/completions")
         full = "http://h:9/v1/chat/completions"
         self.assertEqual(load(f'llm_url = "{full}"')["llm_url"], full)
-        self.assertEqual(load()["llm_url"], "http://127.0.0.1:9090/v1/chat/completions")
+        self.assertEqual(load()["llm_url"], "http://127.0.0.1:8080/v1/chat/completions")
 
     def test_directory_in_place_of_file_is_ignored(self):
         # 파일이 없을 때 Docker가 만든 config.toml 폴더: 죽지 않고 기본값으로 뜬다
@@ -86,7 +86,7 @@ class ConfigTest(unittest.TestCase):
                     os.environ.pop("PEPAR_CONFIG", None)
                 else:
                     os.environ["PEPAR_CONFIG"] = saved
-        self.assertEqual(s["port"], 8765)
+        self.assertEqual(s["port"], 8000)
         self.assertIn("directory", err.getvalue())
 
     def test_unknown_key_rejected(self):

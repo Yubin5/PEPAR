@@ -3,7 +3,7 @@ services:
   pepar:
     build: .
     init: true
-    ports: ["127.0.0.1:8765:8765"]  # 바깥에서 쓸 포트를 바꾸려면 앞쪽 8765를
+    ports: ["127.0.0.1:8000:8000"]  # 바깥에서 쓸 포트를 바꾸려면 앞쪽 8000을
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - pepar-cache:/app/cache

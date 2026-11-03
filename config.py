@@ -2,7 +2,7 @@
 missing keys, DEFAULTS apply.
 
 PEPAR_* environment variables still override the file for advanced use; the Docker image sets only
-container facts with them (listen on 0.0.0.0:8765, cache in /app/cache).
+container facts with them (listen on 0.0.0.0:8000, cache in /app/cache).
 """
 
 import ipaddress
@@ -15,8 +15,8 @@ ROOT = Path(__file__).parent
 
 DEFAULTS = {
     "host": ["127.0.0.1"],
-    "port": 8765,
-    "llm_url": "http://127.0.0.1:9090",
+    "port": 8000,
+    "llm_url": "http://127.0.0.1:8080",  # llama.cpp(llama-server) 기본 포트
     "cache_dir": "cache",
     "password": "",
     "trusted_proxies": [],
