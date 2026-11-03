@@ -2,7 +2,7 @@
 missing keys, DEFAULTS apply.
 
 PEPAR_* environment variables still override the file for advanced use; the Docker image sets only
-container facts with them (listen on 0.0.0.0:8000, cache in /app/cache).
+container facts with them (where the config file and the cache are).
 """
 
 import ipaddress

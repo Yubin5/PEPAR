@@ -4,9 +4,12 @@
 
 ## 프로젝트 소개
 
+> 로컬 LLM을 활용한 웹·PDF·이미지·텍스트 번역 레이어
+
 - arxiv 등지에 배포된 논문과 같은 영문 자료를 번역을 해야할 때가 있었음.
 - 웹사이트 부문은 기존 사용하던 papago가 현재 일부 유료 서비스로 전환되었음.
 - 크롬 자체 번역은 맥락을 무시하며 번역의 질을 낮추는 체감이 있었음.
+- 상용 LLM들은, 정책상 번역을 거부하거나, 토큰량 제한으로 낮은 품질을 보여주었음.
 - 이에 대한 대안으로 로컬 LLM 사용을 시도해 극복하고자 하는 시도.
 - 로컬 LLM의 장점 중 하나인, 비용 문제에서 자유로운 특징을 활용하고자 함.
 
@@ -17,9 +20,9 @@
 
 
 - 백엔드: Python 3.11, Flask, requests, BeautifulSoup + lxml
-- LLM: llama.cpp 라우터(SYCL) + Intel Arc Pro B50 16GB, gemma4-12b 권장
+- LLM: 사용자 개인의 LLM 서버 활용 요망
 - 저장: DB 없이 파일 캐시 (모델별 번역 HTML, 메타, 체크포인트)
-- 운영: systemd 사용자 서비스, Tailscale 내부망 전용
+- 운영: 웹 서버 형태로 운영
 
 ## 과제
 
@@ -33,23 +36,26 @@
   - [x] 번역중인 문서 작업 진행도 표시(ETA, 큐 상태)
   - [x] 실패 블록만 재번역, 번역 문서 삭제
   - [x] (개인 운영)systemd 서비스 등록
-  - [x] OCR 활용한 I2V 기능
+  - [x] OCR 활용한 I2T 기능
   - [x] 번역할 언어 선택
   - [x] llama.cpp 연동과 포트 설정을 담을 config.toml
   - [x] 보안 수단 검토
 
 - [x] 배포
+  - [x] 소스코드
+  - [x] docker container
+  - [x] 테스트
 
 ## 실행 방법
 
-필요한 것: Python 3.11+, llama.cpp 서버(OpenAI 호환 API). 이미지 번역에는 비전 모델이 필요합니다.
+필요한 것: Python 3.11+, llama.cpp 서버(OpenAI 호환 API). 이미지 번역, PDF 번역에는 gemma4와 같은 OCR을 지원하는 모델이 필요합니다.
 
 ```bash
 pip install -r requirements.txt
 python app.py                         # http://127.0.0.1:8000
 ```
 
-설정은 `config.toml` 파일 수정을 통해 하세요.
+설정은 `config.toml` 파일 수정을 통해 할 수 있습니다.
 
 ### Docker
 
@@ -59,13 +65,7 @@ cd PEPAR
 docker compose up -d                  # http://127.0.0.1:8000
 ```
 
-설정은 직접 실행할 때와 같은 `config.toml`에서 고치세요. `llm_url`은 `http://127.0.0.1:8080`처럼 주소와 포트만 적으면 되고, 컨테이너 안에서 `127.0.0.1`이 응답하지 않으면 호스트(`host.docker.internal`)로 다시 시도합니다. 캐시와 로그인 세션은 `pepar-cache` 볼륨에 남습니다.
-
-기본(bridge)에서는 호스트의 llama.cpp가 `0.0.0.0`에서 열려 있고 방화벽이 docker 네트워크를 허용해야 합니다. 그렇지 않고 llama가 `127.0.0.1`에서만 열려 있다면 호스트 네트워크로 실행하세요.
-
-```bash
-docker compose -f compose.yml -f compose.host.yml up -d
-```
+설정은 `config.toml` 파일 수정을 통해 할 수 있습니다.
 
 ---
 
@@ -144,9 +144,9 @@ docker compose -f compose.yml -f compose.host.yml up -d
 
 <br>
 
-### 5주차 초과(2026-09-30 ~)
+### 5주차 초과(2026-09-30 ~ 2026-10-26)
 
-- 이번 주에 한 일:
+- 진행 사항:
   - 프런트엔드 다듬기(이미지 가독성 등)
   - 재번역 편의성(모델 변경)
   - 도커 패키징하여 배포 준비
@@ -157,7 +157,21 @@ docker compose -f compose.yml -f compose.host.yml up -d
   - 이미지 번역 완성도
   - 번역 언어 선택 기능 빠짐
   - 파비콘 제작
+ 
+### 2026-10-26 ~
 
+- 진행한 사항:
+  - 도커 재패키징, 미흡했던 부분들 보완
+  - 비밀번호 옵션 추가
+  - PDF 및 텍스트 번역 기능 추가
+  - 기타 서버 유지보수
+  - 다른 환경에서 테스트
+    - WSL Debian13, 3060 laptop(6GB VRAM)
+- 어려웠던 점:
+  - 첫 docker 컨테이너 패키징 및 배포. 이에 따른 어려움
+  - PDF 번역 품질
+- 추후 진행 사항:
+  - OCR 기능에 특화한 모델을 별도로 선택하여 번역하는, 번역 기능과 별개의 고급 모델 선택 기능 고려
 
 ---
 
