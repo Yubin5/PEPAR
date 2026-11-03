@@ -6,7 +6,7 @@ from pathlib import Path
 import requests
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "pepar"))
 from _app import pepar  # noqa: E402  (must come first: points the cache at a temp dir)
 import ocr  # noqa: E402
 import translator  # noqa: E402

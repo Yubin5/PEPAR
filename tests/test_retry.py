@@ -189,5 +189,29 @@ class LLMRetryTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+    def test_cancel_during_retry_wait_stops_at_once(self):
+        # LLM 서버가 503을 내 재시도를 기다리는 중에 취소하면 기다림을 끝까지 채우지 않고 바로 멈춘다
+        class Busy:
+            status_code = 503
+            text = "busy"
+
+        stop = {"now": False}
+
+        def fake_post(*a, **kw):
+            stop["now"] = True  # 첫 시도가 실패한 뒤 사용자가 취소했다
+            return Busy()
+
+        orig_post, orig_stop = translator.requests.post, translator.should_stop
+        translator.requests.post = fake_post
+        translator.should_stop = lambda: stop["now"]
+        t = time.time()
+        try:
+            with self.assertRaises(translator.Cancelled):
+                translator._post({}, attempts=3, wait=20)
+        finally:
+            translator.requests.post, translator.should_stop = orig_post, orig_stop
+        self.assertLess(time.time() - t, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

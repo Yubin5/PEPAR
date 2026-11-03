@@ -11,7 +11,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent  # 레포 맨 위 (config.toml, cache/가 있는 곳). 코드는 pepar/ 안
 
 DEFAULTS = {
     "host": ["127.0.0.1"],

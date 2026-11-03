@@ -581,10 +581,21 @@ def pick_default_model(models: list[dict]) -> str:
     return models[0]["id"] if models else ""
 
 
+class Cancelled(Exception):
+    """작업이 취소되었다."""
+
+
+# 지금 하는 작업이 취소되었는지. app의 작업 반복이 작업마다 바꿔 끼운다 (작업은 한 번에 하나씩)
+should_stop = lambda: False  # noqa: E731
+
+
 def _post(body: dict, attempts: int = 8, wait: int = 20) -> dict:
-    """서버 장애·모델 재로딩 중이면 기다렸다 재시도하고, 끝내 안 되면 중단한다."""
+    """서버 장애·모델 재로딩 중이면 기다렸다 재시도하고, 끝내 안 되면 중단한다.
+    기다리는 동안에도 취소되었는지 0.5초마다 본다 (아니면 취소해도 2분 넘게 '취소 중'으로 남았다)."""
     last = detail = ""
     for n in range(attempts):
+        if should_stop():
+            raise Cancelled
         try:
             r = requests.post(LLM_URL, json=body, timeout=900)
             if r.status_code < 500:
@@ -599,7 +610,11 @@ def _post(body: dict, attempts: int = 8, wait: int = 20) -> dict:
             detail = ("응답 시간 초과" if isinstance(e, requests.Timeout)
                       else "응답이 중간에 끊김" if isinstance(e, requests.exceptions.ChunkedEncodingError) else "연결 실패")
         print(f"[pepar] LLM 서버 응답 없음 ({n + 1}/{attempts}), {wait}초 후 재시도: {last}", file=sys.stderr, flush=True)
-        time.sleep(wait)
+        until = time.time() + wait
+        while time.time() < until:
+            if should_stop():
+                raise Cancelled
+            time.sleep(min(0.5, max(0, until - time.time())))
     raise LLMUnavailable(
         f"LLM 서버({LLM_URL})가 응답하지 않습니다 ({detail}). 서버가 실행 중인지 확인한 뒤 다시 시도해 주세요. 이미 번역한 부분은 이어서 진행됩니다."
     )

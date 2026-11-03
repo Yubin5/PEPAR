@@ -45,8 +45,7 @@ MODEL_RE = re.compile(r"^[\w.\-]+(@([a-z]{2}|x-[0-9a-f]{8}))?$")
 ACTIVE = ("queued", "fetching", "reading", "translating")
 
 
-class Cancelled(Exception):
-    pass
+Cancelled = translator.Cancelled  # 작업 취소 (번역 중 LLM 재시도를 기다리는 동안에도 난다)
 
 
 app = Flask(__name__, static_folder=None)
@@ -294,6 +293,7 @@ def worker():
         model, key = job["model"], job["key"]  # model은 모델 칸
         base, lang = split_slot(model)
         llm = job.get("llm") or base
+        translator.should_stop = lambda: bool(job.get("cancel"))
 
         def progress(stage, done, total, **info):
             if job.get("cancel"):
@@ -366,6 +366,7 @@ def worker():
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
             job.update(stage="error", message=f"예기치 못한 오류가 발생했습니다 ({type(e).__name__}). 서버 로그를 확인해 주세요.")
+        translator.should_stop = lambda: False
         job["finished_at"] = time.time()
         save_failed()
 

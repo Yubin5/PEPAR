@@ -52,7 +52,7 @@
 
 ```bash
 pip install -r requirements.txt
-python app.py                         # http://127.0.0.1:8000
+python pepar/app.py                   # http://127.0.0.1:8000
 ```
 
 설정은 `config.toml` 파일 수정을 통해 할 수 있습니다.

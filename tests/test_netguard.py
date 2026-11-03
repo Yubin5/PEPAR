@@ -6,7 +6,7 @@ from pathlib import Path
 
 import requests
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pepar"))
 import netguard  # noqa: E402
 import translator  # noqa: E402
 from errors import PeparError  # noqa: E402

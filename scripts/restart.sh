@@ -1,6 +1,7 @@
 #!/bin/bash
 # 작업이 진행 중이면 재시작을 거부한다 (-f로 강제).
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
+export PYTHONPATH=pepar  # 아래에서 설정을 읽으려고 (코드는 pepar/ 안)
 PORT=$(.venv/bin/python -c "from config import settings; print(settings['port'])")
 PASSWORD=$(.venv/bin/python -c "import config; print(config.settings['password'])")
 JAR=$(mktemp)
